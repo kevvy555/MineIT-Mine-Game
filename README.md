@@ -1,38 +1,30 @@
 # MineIT Mine Game
 
-A MineIT universe mini-game focused on operating and physically developing a single mine.
+A MineIT-universe Android mining game experiment focused on making a complex underground mine readable and playable on a phone.
 
-## Current playable slice
+## Current POC — Mine Prism 0.2.0
 
-Version `0.1.2` is deliberately narrow. It tests the core digging feel on Android:
+The previous steerable-digger prototype has been superseded. Version `0.2.0` tests the **Mine Prism** interaction model:
 
-- blue sky above the surface;
-- grey rock below;
-- a rectangular digger beginning at the surface;
-- start and stop controls;
-- full 360-degree steering;
-- immediate tool rotation while stopped;
-- smooth steering while digging;
-- drilling in any direction underground, including back upward;
-- a hard surface boundary so the tool cannot travel through open sky;
-- a persistent excavated shaft/tunnel;
-- automatic camera follow;
-- drag-to-pan camera control;
-- pinch-to-zoom camera control;
-- depth and heading readouts.
+- the mine exists as a 3-axis model (`x`, `y`, depth);
+- an isometric geological prism presents the whole mine without requiring a free-flying 3D camera;
+- a depth slider peels rock away to reveal deeper workings;
+- one ore body visibly continues through multiple depths;
+- working levels become visible when the depth slice reaches them;
+- **Explode Levels** separates levels vertically while preserving their relationship to the shaft;
+- tapping a revealed level unfolds it into a readable top-down operational view;
+- pinch zoom and drag pan work in both views.
 
-At the surface the digger can only start when pointed into the ground. If it drills upward and reaches the surface, digging stops there.
-
-The gameplay concept beyond the prototype is captured in [`docs/GAME_IDEA.md`](docs/GAME_IDEA.md).
+This is a presentation/interaction POC, not yet a mining simulation. There is deliberately no production, waste, workforce, power, equipment economy or save game in this build.
 
 ## Architecture
 
-- `domain/` owns digger state and deterministic digging rules.
-- `ui/` owns Compose rendering and transient pan/zoom state.
-- `DigGameViewModel` bridges UI intent to the domain simulation.
+- `domain/` owns the mine's immutable 3D geometry and Prism state transitions.
+- `ui/` owns Compose rendering, projection, hit-testing and transient camera pan/zoom.
+- UI renders domain state and dispatches intent; it is not the source of truth for mine geometry.
 
-This follows the repository guidance in `AGENTS.md`: Compose renders state and dispatches intent; gameplay behaviour remains outside the UI.
+See [`docs/MINE_PRISM_POC.md`](docs/MINE_PRISM_POC.md) for the current concept and evaluation goals, and [`docs/GAME_IDEA.md`](docs/GAME_IDEA.md) for the broader game discovery.
 
 ## CI / APK
 
-GitHub Actions runs the domain tests, builds a debug APK and signs it with the same persistent development signer pattern used by MineIT Android CI. The APK is uploaded as the `mineit-mine-game-debug` workflow artifact.
+GitHub Actions runs domain tests, builds a debug APK and verifies the persistent development signer before publishing the `mineit-mine-game-debug` artifact.
