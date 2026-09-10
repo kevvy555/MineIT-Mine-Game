@@ -17,6 +17,17 @@ class DigSimulationTest {
     }
 
     @Test
+    fun stoppedDiggerRotatesImmediatelyWhenSteeringChanges() {
+        val initial = DiggerState()
+
+        val steered = DigSimulation.setTargetHeading(initial, 140f)
+
+        assertEquals(140f, steered.headingDegrees, 0.01f)
+        assertEquals(140f, steered.targetHeadingDegrees, 0.01f)
+        assertFalse(steered.isDigging)
+    }
+
+    @Test
     fun straightDownDiggingIncreasesDepth() {
         val started = DigSimulation.start(DiggerState())
 
@@ -45,7 +56,9 @@ class DigSimulationTest {
         val tooHigh = DigSimulation.setTargetHeading(state, 220f)
 
         assertEquals(DigSimulation.MIN_HEADING_DEGREES, tooLow.targetHeadingDegrees)
+        assertEquals(DigSimulation.MIN_HEADING_DEGREES, tooLow.headingDegrees)
         assertEquals(DigSimulation.MAX_HEADING_DEGREES, tooHigh.targetHeadingDegrees)
+        assertEquals(DigSimulation.MAX_HEADING_DEGREES, tooHigh.headingDegrees)
     }
 
     @Test

@@ -17,9 +17,17 @@ object DigSimulation {
 
     fun reset(): DiggerState = DiggerState()
 
-    fun setTargetHeading(state: DiggerState, degrees: Float): DiggerState = state.copy(
-        targetHeadingDegrees = degrees.coerceIn(MIN_HEADING_DEGREES, MAX_HEADING_DEGREES),
-    )
+    fun setTargetHeading(state: DiggerState, degrees: Float): DiggerState {
+        val boundedHeading = degrees.coerceIn(MIN_HEADING_DEGREES, MAX_HEADING_DEGREES)
+        return if (state.isDigging) {
+            state.copy(targetHeadingDegrees = boundedHeading)
+        } else {
+            state.copy(
+                headingDegrees = boundedHeading,
+                targetHeadingDegrees = boundedHeading,
+            )
+        }
+    }
 
     fun tick(state: DiggerState, deltaSeconds: Float): DiggerState {
         if (!state.isDigging || deltaSeconds <= 0f) {

@@ -2,6 +2,7 @@ package com.mineit.minegame.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,9 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -30,6 +34,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,6 +49,7 @@ fun DigGameScreen(
     viewModel: DigGameViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var cameraPanOffset by remember { mutableStateOf(Offset.Zero) }
 
     Column(
         modifier = Modifier
@@ -54,6 +60,8 @@ fun DigGameScreen(
 
         MineCanvas(
             state = state,
+            panOffset = cameraPanOffset,
+            onPan = { dragAmount -> cameraPanOffset += dragAmount },
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -64,7 +72,10 @@ fun DigGameScreen(
             onAngleChange = viewModel::setTargetHeading,
             onStart = viewModel::startDigging,
             onStop = viewModel::stopDigging,
-            onReset = viewModel::reset,
+            onReset = {
+                viewModel.reset()
+                cameraPanOffset = Offset.Zero
+            },
         )
     }
 }
@@ -80,7 +91,7 @@ private fun StatusPanel(state: DiggerState) {
     ) {
         Column {
             Text(
-                text = "MINEIT // DIG TEST 0.1",
+                text = "MINEIT // DIG TEST 0.1.1",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
@@ -109,9 +120,18 @@ private fun StatusPanel(state: DiggerState) {
 @Composable
 private fun MineCanvas(
     state: DiggerState,
+    panOffset: Offset,
+    onPan: (Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Canvas(modifier = modifier) {
+    Canvas(
+        modifier = modifier.pointerInput(Unit) {
+            detectDragGestures { change, dragAmount ->
+                change.consume()
+                onPan(dragAmount)
+            }
+        },
+    ) {
         val metresAcross = 28f
         val pixelsPerMetre = size.width / metresAcross
         val viewportHeightMetres = size.height / pixelsPerMetre
@@ -123,11 +143,11 @@ private fun MineCanvas(
         val cameraLeft = cameraCentreX - (metresAcross / 2f)
 
         fun toScreen(point: WorldPoint): Offset = Offset(
-            x = (point.xMetres - cameraLeft) * pixelsPerMetre,
-            y = (point.yMetres - cameraTop) * pixelsPerMetre,
+            x = ((point.xMetres - cameraLeft) * pixelsPerMetre) + panOffset.x,
+            y = ((point.yMetres - cameraTop) * pixelsPerMetre) + panOffset.y,
         )
 
-        val surfaceY = (0f - cameraTop) * pixelsPerMetre
+        val surfaceY = ((0f - cameraTop) * pixelsPerMetre) + panOffset.y
 
         drawRect(
             color = Color(0xFF73C5F5),
@@ -240,7 +260,7 @@ private fun ControlsPanel(
             )
 
             Text(
-                text = "90° is straight down. Move the slider while digging to curve the shaft.",
+                text = "90° is straight down. Drag the mine to pan. Move the slider while digging to curve the shaft.",
                 color = Color(0xFF9AA4B2),
                 style = MaterialTheme.typography.bodySmall,
             )
