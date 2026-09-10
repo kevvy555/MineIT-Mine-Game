@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -100,7 +101,7 @@ private fun StatusPanel(state: DiggerState) {
     ) {
         Column {
             Text(
-                text = "MINEIT // DIG TEST 0.1.2",
+                text = "MINEIT // DIG TEST 0.1.3",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
@@ -181,7 +182,7 @@ private fun MineCanvas(
             )
         }
 
-        if (state.excavatedPath.size > 1) {
+        if (state.excavatedPath.size > 1 && surfaceY < size.height) {
             val tunnelPath = Path().apply {
                 val first = toScreen(state.excavatedPath.first())
                 moveTo(first.x, first.y)
@@ -192,14 +193,25 @@ private fun MineCanvas(
                 val current = toScreen(state.position)
                 lineTo(current.x, current.y)
             }
-            drawPath(
-                path = tunnelPath,
-                color = Color(0xFF282B2F),
-                style = Stroke(
-                    width = 3.7f * pixelsPerMetre,
-                    cap = StrokeCap.Round,
-                ),
-            )
+
+            // The tunnel has physical width, but excavation is only valid inside rock.
+            // Hard-clip the rendered tunnel at the ground surface so no part of the
+            // thick stroke can ever paint into the sky.
+            clipRect(
+                left = 0f,
+                top = surfaceY.coerceAtLeast(0f),
+                right = size.width,
+                bottom = size.height,
+            ) {
+                drawPath(
+                    path = tunnelPath,
+                    color = Color(0xFF282B2F),
+                    style = Stroke(
+                        width = 3.7f * pixelsPerMetre,
+                        cap = StrokeCap.Round,
+                    ),
+                )
+            }
         }
 
         val diggerCentre = toScreen(state.position)
