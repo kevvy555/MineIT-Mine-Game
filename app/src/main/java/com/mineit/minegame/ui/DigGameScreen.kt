@@ -2,7 +2,7 @@ package com.mineit.minegame.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,12 +44,16 @@ import com.mineit.minegame.domain.DiggerState
 import com.mineit.minegame.domain.WorldPoint
 import kotlin.math.max
 
+private const val MIN_CAMERA_ZOOM = 0.5f
+private const val MAX_CAMERA_ZOOM = 4f
+
 @Composable
 fun DigGameScreen(
     viewModel: DigGameViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var cameraPanOffset by remember { mutableStateOf(Offset.Zero) }
+    var cameraZoom by remember { mutableStateOf(1f) }
 
     Column(
         modifier = Modifier
@@ -61,7 +65,11 @@ fun DigGameScreen(
         MineCanvas(
             state = state,
             panOffset = cameraPanOffset,
-            onPan = { dragAmount -> cameraPanOffset += dragAmount },
+            zoom = cameraZoom,
+            onTransform = { pan, zoomChange ->
+                cameraPanOffset += pan
+                cameraZoom = (cameraZoom * zoomChange).coerceIn(MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM)
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -75,6 +83,7 @@ fun DigGameScreen(
             onReset = {
                 viewModel.reset()
                 cameraPanOffset = Offset.Zero
+                cameraZoom = 1f
             },
         )
     }
@@ -91,7 +100,7 @@ private fun StatusPanel(state: DiggerState) {
     ) {
         Column {
             Text(
-                text = "MINEIT // DIG TEST 0.1.1",
+                text = "MINEIT // DIG TEST 0.1.2",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
@@ -121,18 +130,19 @@ private fun StatusPanel(state: DiggerState) {
 private fun MineCanvas(
     state: DiggerState,
     panOffset: Offset,
-    onPan: (Offset) -> Unit,
+    zoom: Float,
+    onTransform: (pan: Offset, zoomChange: Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Canvas(
         modifier = modifier.pointerInput(Unit) {
-            detectDragGestures { change, dragAmount ->
-                change.consume()
-                onPan(dragAmount)
+            detectTransformGestures { _, pan, zoomChange, _ ->
+                onTransform(pan, zoomChange)
             }
         },
     ) {
-        val metresAcross = 28f
+        val baseMetresAcross = 28f
+        val metresAcross = baseMetresAcross / zoom
         val pixelsPerMetre = size.width / metresAcross
         val viewportHeightMetres = size.height / pixelsPerMetre
 
@@ -260,7 +270,7 @@ private fun ControlsPanel(
             )
 
             Text(
-                text = "90° is straight down. Drag the mine to pan. Move the slider while digging to curve the shaft.",
+                text = "0°/360° right • 90° down • 180° left • 270° up. Drag to pan • pinch to zoom.",
                 color = Color(0xFF9AA4B2),
                 style = MaterialTheme.typography.bodySmall,
             )

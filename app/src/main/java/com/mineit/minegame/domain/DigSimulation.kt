@@ -1,17 +1,24 @@
 package com.mineit.minegame.domain
 
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
 object DigSimulation {
-    const val MIN_HEADING_DEGREES = 20f
-    const val MAX_HEADING_DEGREES = 160f
+    const val MIN_HEADING_DEGREES = 0f
+    const val MAX_HEADING_DEGREES = 360f
 
     private const val DIG_SPEED_METRES_PER_SECOND = 4f
     private const val TURN_SPEED_DEGREES_PER_SECOND = 55f
     private const val PATH_POINT_SPACING_METRES = 0.20f
+    private const val SURFACE_ENTRY_EPSILON = 0.0001f
 
-    fun start(state: DiggerState): DiggerState = state.copy(isDigging = true)
+    fun start(state: DiggerState): DiggerState {
+        if (state.position.yMetres <= 0f && downwardComponent(state.headingDegrees) <= SURFACE_ENTRY_EPSILON) {
+            return state.copy(isDigging = false)
+        }
+        return state.copy(isDigging = true)
+    }
 
     fun stop(state: DiggerState): DiggerState = state.copy(isDigging = false)
 
@@ -35,36 +42,88 @@ object DigSimulation {
         }
 
         val boundedDelta = deltaSeconds.coerceAtMost(0.1f)
-        val nextHeading = moveTowards(
+        val nextHeading = moveTowardsAngle(
             current = state.headingDegrees,
             target = state.targetHeadingDegrees,
             maximumChange = TURN_SPEED_DEGREES_PER_SECOND * boundedDelta,
         )
         val radians = Math.toRadians(nextHeading.toDouble())
         val travel = DIG_SPEED_METRES_PER_SECOND * boundedDelta
-        val nextPosition = WorldPoint(
-            xMetres = state.position.xMetres + (cos(radians) * travel).toFloat(),
-            yMetres = (state.position.yMetres + (sin(radians) * travel).toFloat()).coerceAtLeast(0f),
+        val xTravel = (cos(radians) * travel).toFloat()
+        val yTravel = (sin(radians) * travel).toFloat()
+
+        if (state.position.yMetres <= 0f && yTravel <= SURFACE_ENTRY_EPSILON) {
+            return state.copy(
+                headingDegrees = nextHeading,
+                isDigging = false,
+            )
+        }
+
+        val proposedPosition = WorldPoint(
+            xMetres = state.position.xMetres + xTravel,
+            yMetres = state.position.yMetres + yTravel,
         )
 
-        val path = if (state.excavatedPath.last().distanceTo(nextPosition) >= PATH_POINT_SPACING_METRES) {
-            state.excavatedPath + nextPosition
-        } else {
-            state.excavatedPath
+        if (proposedPosition.yMetres < 0f) {
+            val travelFractionToSurface = state.position.yMetres /
+                (state.position.yMetres - proposedPosition.yMetres)
+            val surfacePosition = WorldPoint(
+                xMetres = state.position.xMetres +
+                    ((proposedPosition.xMetres - state.position.xMetres) * travelFractionToSurface),
+                yMetres = 0f,
+            )
+            return state.copy(
+                position = surfacePosition,
+                headingDegrees = nextHeading,
+                excavatedPath = appendPathPoint(
+                    path = state.excavatedPath,
+                    point = surfacePosition,
+                    force = true,
+                ),
+                isDigging = false,
+            )
         }
 
         return state.copy(
-            position = nextPosition,
+            position = proposedPosition,
             headingDegrees = nextHeading,
-            excavatedPath = path,
+            excavatedPath = appendPathPoint(
+                path = state.excavatedPath,
+                point = proposedPosition,
+            ),
         )
     }
 
-    private fun moveTowards(current: Float, target: Float, maximumChange: Float): Float {
-        val difference = target - current
-        if (kotlin.math.abs(difference) <= maximumChange) {
+    private fun downwardComponent(headingDegrees: Float): Float {
+        val radians = Math.toRadians(headingDegrees.toDouble())
+        return sin(radians).toFloat()
+    }
+
+    private fun appendPathPoint(
+        path: List<WorldPoint>,
+        point: WorldPoint,
+        force: Boolean = false,
+    ): List<WorldPoint> {
+        if (force || path.last().distanceTo(point) >= PATH_POINT_SPACING_METRES) {
+            return path + point
+        }
+        return path
+    }
+
+    private fun moveTowardsAngle(current: Float, target: Float, maximumChange: Float): Float {
+        val difference = shortestAngularDifference(current, target)
+        if (abs(difference) <= maximumChange) {
             return target
         }
-        return current + difference.coerceIn(-maximumChange, maximumChange)
+        return normalizeHeading(current + difference.coerceIn(-maximumChange, maximumChange))
+    }
+
+    private fun shortestAngularDifference(current: Float, target: Float): Float {
+        return ((target - current + 540f) % 360f) - 180f
+    }
+
+    private fun normalizeHeading(degrees: Float): Float {
+        val normalized = degrees % 360f
+        return if (normalized < 0f) normalized + 360f else normalized
     }
 }

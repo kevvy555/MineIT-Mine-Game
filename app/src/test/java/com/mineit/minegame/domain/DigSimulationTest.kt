@@ -20,11 +20,24 @@ class DigSimulationTest {
     fun stoppedDiggerRotatesImmediatelyWhenSteeringChanges() {
         val initial = DiggerState()
 
-        val steered = DigSimulation.setTargetHeading(initial, 140f)
+        val steered = DigSimulation.setTargetHeading(initial, 270f)
 
-        assertEquals(140f, steered.headingDegrees, 0.01f)
-        assertEquals(140f, steered.targetHeadingDegrees, 0.01f)
+        assertEquals(270f, steered.headingDegrees, 0.01f)
+        assertEquals(270f, steered.targetHeadingDegrees, 0.01f)
         assertFalse(steered.isDigging)
+    }
+
+    @Test
+    fun fullRotationHeadingRangeIsAvailable() {
+        val state = DiggerState()
+
+        val zero = DigSimulation.setTargetHeading(state, 0f)
+        val up = DigSimulation.setTargetHeading(state, 270f)
+        val fullTurn = DigSimulation.setTargetHeading(state, 360f)
+
+        assertEquals(0f, zero.headingDegrees, 0.01f)
+        assertEquals(270f, up.headingDegrees, 0.01f)
+        assertEquals(360f, fullTurn.headingDegrees, 0.01f)
     }
 
     @Test
@@ -49,16 +62,56 @@ class DigSimulationTest {
     }
 
     @Test
-    fun headingIsClampedToDownwardDiggingRange() {
-        val state = DiggerState()
+    fun steeringUsesShortestPathAcrossZeroDegrees() {
+        val underground = DiggerState(
+            position = WorldPoint(0f, 5f),
+            headingDegrees = 350f,
+            targetHeadingDegrees = 350f,
+            excavatedPath = listOf(WorldPoint(0f, 5f)),
+        )
+        val started = DigSimulation.start(underground)
+        val steered = DigSimulation.setTargetHeading(started, 10f)
 
-        val tooLow = DigSimulation.setTargetHeading(state, -40f)
-        val tooHigh = DigSimulation.setTargetHeading(state, 220f)
+        val next = DigSimulation.tick(steered, 0.1f)
 
-        assertEquals(DigSimulation.MIN_HEADING_DEGREES, tooLow.targetHeadingDegrees)
-        assertEquals(DigSimulation.MIN_HEADING_DEGREES, tooLow.headingDegrees)
-        assertEquals(DigSimulation.MAX_HEADING_DEGREES, tooHigh.targetHeadingDegrees)
-        assertEquals(DigSimulation.MAX_HEADING_DEGREES, tooHigh.headingDegrees)
+        assertTrue(next.headingDegrees > 350f || next.headingDegrees < 10f)
+    }
+
+    @Test
+    fun surfaceDiggerCannotStartTowardSky() {
+        val upward = DigSimulation.setTargetHeading(DiggerState(), 270f)
+
+        val started = DigSimulation.start(upward)
+
+        assertFalse(started.isDigging)
+        assertEquals(WorldPoint(0f, 0f), started.position)
+    }
+
+    @Test
+    fun surfaceDiggerCannotTravelSidewaysWithoutEnteringRock() {
+        val sideways = DigSimulation.setTargetHeading(DiggerState(), 0f)
+
+        val started = DigSimulation.start(sideways)
+
+        assertFalse(started.isDigging)
+        assertEquals(WorldPoint(0f, 0f), started.position)
+    }
+
+    @Test
+    fun undergroundDiggerCanDrillUpwardButStopsAtSurface() {
+        val underground = DiggerState(
+            position = WorldPoint(0f, 0.15f),
+            headingDegrees = 270f,
+            targetHeadingDegrees = 270f,
+            excavatedPath = listOf(WorldPoint(0f, 0.15f)),
+        )
+        val started = DigSimulation.start(underground)
+
+        val next = DigSimulation.tick(started, 0.1f)
+
+        assertEquals(0f, next.position.yMetres, 0.001f)
+        assertFalse(next.isDigging)
+        assertTrue(next.excavatedPath.size > 1)
     }
 
     @Test
