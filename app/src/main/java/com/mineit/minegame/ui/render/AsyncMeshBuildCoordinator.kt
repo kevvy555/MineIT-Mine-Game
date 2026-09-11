@@ -37,6 +37,9 @@ internal data class CapBuildRequest(
 internal data class CapBuildResult(
     val pipelineGeneration: Long,
     val revision: Long,
+    val axis: ClipAxis,
+    val fraction: Float,
+    val flipped: Boolean,
     val mesh: MineMesh,
     val buildMs: Float,
 )
@@ -103,6 +106,9 @@ internal class AsyncMeshBuildCoordinator {
                     CapBuildResult(
                         pipelineGeneration = request.pipelineGeneration,
                         revision = request.revision,
+                        axis = request.axis,
+                        fraction = request.fraction,
+                        flipped = request.flipped,
                         mesh = mesh,
                         buildMs = nanosToMs(System.nanoTime() - start),
                     ),
