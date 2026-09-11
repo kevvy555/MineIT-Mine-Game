@@ -18,6 +18,31 @@ class ChunkMeshPlannerTest {
     )
 
     @Test
+    fun untouchedInteriorChunkDoesNotNeedMesh() {
+        assertFalse(
+            ChunkMeshPlanner.requiresMesh(
+                key = ChunkKey(0, 0, 1),
+                extent = extent,
+                hasTunnelSegments = false,
+            ),
+        )
+        assertTrue(
+            ChunkMeshPlanner.requiresMesh(
+                key = ChunkKey(0, 0, 1),
+                extent = extent,
+                hasTunnelSegments = true,
+            ),
+        )
+        assertTrue(
+            ChunkMeshPlanner.requiresMesh(
+                key = ChunkKey(0, 0, 0),
+                extent = extent,
+                hasTunnelSegments = false,
+            ),
+        )
+    }
+
+    @Test
     fun shortTunnelOnlyInvalidatesNearbyChunks() {
         val affected = ChunkMeshPlanner.affectedChunks(
             segment = TunnelSegment(
