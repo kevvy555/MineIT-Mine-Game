@@ -38,6 +38,19 @@ internal object ChunkMeshPlanner {
         }
     }
 
+    /**
+     * Completely solid interior chunks cannot contribute any visible triangles. Only outer world
+     * faces or chunks touched by excavation need a generated rock mesh.
+     */
+    fun requiresMesh(
+        key: ChunkKey,
+        extent: ChunkExtent,
+        hasTunnelSegments: Boolean,
+    ): Boolean = hasTunnelSegments ||
+        key.x == extent.minChunkX || key.x == extent.maxChunkX ||
+        key.y == extent.minChunkY || key.y == extent.maxChunkY ||
+        key.z == extent.minChunkZ || key.z == extent.maxChunkZ
+
     fun affectedChunks(
         segment: TunnelSegment,
         tunnelRadiusMetres: Float,

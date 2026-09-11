@@ -1,132 +1,126 @@
-# 3D Geological World POC — 0.5.0
+# 3D Geological World POC — 0.6.0
 
 ## Purpose
 
-0.5 keeps the solid geological/CT interaction proven by 0.4 and focuses on the next critical question: **can the custom 3D approach scale on ordinary mobile hardware while tunnel quality later increases?**
+0.6 keeps the solid geological/CT interaction and focuses on two things revealed by real Pixel 7 testing:
 
-The Pixel-class phone is treated as a useful target rather than assuming performance problems are simply old hardware.
+1. **rendering must stay responsive while excavation geometry is regenerated**;
+2. the mobile controls need to stay understandable as more view/mining tools are added.
 
-## Domain ownership
+The Pixel-class phone remains a deliberate performance target. The goal is not to excuse slow behaviour as old hardware; the custom 3D approach must prove it can scale before tunnel quality is increased significantly.
 
-`domain/` remains the canonical owner of:
+## Canonical ownership
+
+`domain/` remains authoritative for:
 
 - X/Y/Z mine coordinates and world extent;
 - tunnel geometry;
-- ore-body geometry and discovery;
-- machine heading and vertical angle;
-- continuous excavation rules;
-- horizontal steering;
-- excavated volume and waste tonnage.
+- ore-body geometry/discovery;
+- heading and vertical angle;
+- continuous excavation;
+- steering and fixed relative heading turns;
+- removed volume and waste tonnage.
 
-Renderer optimisation must not become gameplay truth.
+Camera following, CT clipping, diagnostics, chunk caches and background mesh jobs are renderer/UI concerns only.
 
-### Steering preview
+## Control model
 
-When stopped, the LEFT/RIGHT slider previews up to 90° either side of the committed heading. The machine mesh visibly rotates to this preview direction. Starting excavation commits the preview heading and recentres steering.
+The bottom interaction area is split into three mutually exclusive panels selected by persistent **CONTROL / VIEW / OTHER** buttons.
 
-Once moving, steering again represents turn rate so the tunnel curves rather than snapping between headings.
+### CONTROL
 
-### Absolute vertical angle
+- stopped LEFT/RIGHT steering visibly previews the machine direction;
+- moving LEFT/RIGHT remains a turn-rate input;
+- fixed relative turns are available at **45° and 90° left/right** while stopped;
+- the vertical UP/DOWN slider remains available for arbitrary slope;
+- absolute slope presets remain UP 90, UP 45, LEVEL, DOWN 45 and DOWN 90;
+- START/STOP controls continuous excavation.
 
-The domain now supports the complete -90° to +90° range:
+### VIEW
 
-- -90° = vertically up;
-- -45° = 45° up;
-- 0° = level;
-- +45° = 45° down;
-- +90° = vertically down.
+- orbit drag and pinch zoom;
+- X/Y/Z CT slice controls;
+- OTHER SIDE and FULL/SLICE;
+- **FOLLOW DIGGER**, which targets the camera at the machine while preserving orbit and zoom;
+- reset view.
 
-The UI keeps the vertical slider and adds absolute presets. This makes a shaft-to-level sequence explicit: **DOWN 90**, then **LEVEL**.
+The zoom range is deliberately much wider than 0.5 so the player can inspect the cutter/tunnel wall closely.
 
-## Performance architecture
+### OTHER
 
-### Chunk-local rock meshes
+- diagnostics toggle;
+- reset mine;
+- compact live renderer status.
 
-The 24 m geological chunks that previously existed mainly as world-expansion bookkeeping are now actual render cache units.
+## Second performance architecture pass
 
-The renderer no longer regenerates one mesh for the complete geological extent whenever the tunnel changes. Each new tunnel segment calculates the small set of chunks its cutter radius can affect and only those chunks are marked dirty.
+### Background CPU meshing
 
-When world expansion moves an exterior boundary, only newly created chunks and old boundary-face chunks are invalidated.
+0.5 made geology chunk-local, but scalar-field sampling and polygonisation still ran synchronously inside `onDrawFrame`. A single expensive chunk could therefore freeze camera motion even though the total amount of work was much smaller.
 
-### Tunnel spatial index
+0.6 moves **chunk mesh generation** to a dedicated background worker. Completed CPU meshes are returned to the OpenGL thread, where only the VBO upload/replacement occurs.
 
-Each render chunk keeps a set of tunnel segments that can physically influence that chunk. Scalar-field sampling therefore tests a point against local tunnel geometry rather than every segment ever excavated.
+The CT cap has a separate background worker so moving a slice is not forced to wait behind a geological chunk build.
 
-This is renderer acceleration data only; the authoritative tunnel remains the domain polyline.
+Build requests include pipeline/revision IDs. If excavation changes a chunk or the slice moves while an older request is still running, the stale result is discarded rather than overwriting newer geometry.
 
-### Active and refined quality
+### Distance-throttled active excavation
 
-During continuous digging, dirty chunks use a 2 m scalar-field sampling step to keep cutter updates responsive.
+The domain machine still advances at 100 ms ticks, but geology is no longer remeshed every tick.
 
-When digging stops, chunks touched by that excavation run a 1.2 m refinement pass. This deliberately separates **interactive excavation cost** from **finished tunnel quality**, allowing later testing of still finer walls without multiplying the whole-world workload.
+New tunnel segments are immediately indexed spatially, while affected chunks accumulate in an active dirty set. An active remesh is scheduled after the cutter has advanced roughly **1.2 m** (or when world extent changes). This separates smooth machine motion from the much more expensive geological surface update.
 
-### GPU buffers
+When digging stops, every chunk touched during that run receives the existing finer refinement pass.
 
-Each cached chunk is uploaded to an OpenGL vertex buffer object (VBO). Meshes remain on the GPU until that specific chunk is invalidated.
+### Skip solid interior chunks
 
-The CT cap and machine are separate VBOs. Shader attribute/uniform locations are cached rather than looked up every frame.
+A completely solid chunk inside the geological extent cannot contribute visible triangles. Such chunks are no longer sampled/meshed until excavation reaches them. Outer world faces and excavated interior chunks still generate normal meshes.
 
-### CT cap invalidation
+This matters increasingly as the mine expands in X/Y/Z because cost now follows visible surface plus excavated workings rather than total volume.
 
-The solid CT cap is expensive enough to treat independently. It rebuilds when:
+## CT cap bug fix
 
-- the player changes axis, position, side or enables/disables slicing;
-- geological extent changes;
-- ore discovery changes the material shown on a cut;
-- a newly excavated segment reaches the current cut plane.
+Real-device testing exposed a directional hollow-box effect when moving a Z slice deeper from the grass surface.
 
-Excavation elsewhere no longer forces the current CT section to regenerate.
+The cause was timing rather than geology: the OpenGL clip plane moved immediately, but a replacement solid cap took longer to generate. The previous shallower cap was clipped away by the new plane, temporarily exposing the hollow shell. Moving back upward appeared correct because the previous deeper cap remained on the kept side.
 
-### Incremental ore contact
+0.6 keeps the last valid cap visible without applying the current clipping plane to that cap while the next asynchronous cap is generated. The replacement then swaps in atomically on the GL thread.
 
-Previously, every excavation tick rescanned the complete historic tunnel to calculate ore exposure. 0.5 tests only the newly added tunnel segment and merges any newly exposed ore segment IDs into existing discovery state.
+## Diagnostics
 
-The full scan remains available as a regression reference and is tested against the incremental result.
+The 0.5 diagnostics listener could be detached during Compose recomposition because the lifecycle effect disposed the newly created view rather than the view captured by that effect.
 
-## Performance HUD
+0.6 binds/unbinds the specific `MineSurfaceView` instance and explicitly resumes it when attached to an already-resumed lifecycle. The overlay now reports:
 
-The 3D viewport displays a compact diagnostic overlay containing:
-
-- FPS;
-- effective frame time;
-- most recent chunk mesh-build time;
-- number of chunks rebuilt in that sample;
-- CT-cap build time;
+- FPS/frame time;
+- latest background chunk build time;
+- latest background CT-cap build time;
+- GPU upload time;
 - triangle count;
 - cached chunk count;
-- GPU-buffer upload time.
+- pending chunk queue length;
+- mesh/cap worker BUSY/IDLE state.
 
-`GLSurfaceView` deliberately runs continuously in this POC so FPS can be measured on real devices. A later production pass can return to demand-driven rendering when static to reduce battery use.
+## Follow digger
 
-## Digger readability and x-ray locator
+FOLLOW DIGGER changes the camera target from the full geological extent centre to the current tunnel face/machine position. It uses a fixed local framing span so the machine does not become progressively smaller simply because the mine world has expanded hundreds of metres away.
 
-The old machine was too visually symmetrical to communicate direction. 0.5 gives it:
-
-- a wide bright cutter at the front;
-- an elongated orange body;
-- a bright centre spine pointing at the face;
-- a dark rear block.
-
-The same mesh is rendered a second time at low alpha with depth testing and CT clipping disabled. This creates an always-visible x-ray silhouette without revealing hidden tunnels or ore.
-
-## Continuous digging cadence
-
-The simulation cadence moves from 250 ms to 100 ms. Chunk-local invalidation is intended to make the more responsive machine movement affordable while exposing actual device performance through the HUD.
+The x-ray machine remains independent of follow mode and continues to render through rock and CT slices.
 
 ## What to evaluate
 
-1. Does FPS remain comfortable while continuously digging on a Pixel 7-class device?
-2. How large are the reported **mesh**, **cap**, and **upload** times during a straight shaft and during curved excavation?
-3. Does stopping cause a tolerable refinement cost, and is the resulting tunnel noticeably smoother?
-4. Does world expansion create an obvious hitch or remain local enough?
-5. Is the asymmetric/x-ray machine easy to locate and is its direction unmistakable?
-6. Does stopped steering preview make choosing a heading intuitive?
-7. Are **DOWN 90 → LEVEL** and the other absolute presets useful enough to keep?
-8. After this pass, is finer tunnel sampling realistic on the target phone, or should meshing move off the GL thread before quality is increased further?
+1. Does orbit/zoom remain smooth while the mesh worker reports BUSY?
+2. Does continuous digging feel smoother even if the actual tunnel wall catches up in ~1 m steps?
+3. Do diagnostics now show realistic FPS/build/queue values on device?
+4. Does Z slicing stay visually solid in both drag directions?
+5. Is the larger zoom range enough to inspect the cutter and wall closely?
+6. Is FOLLOW DIGGER useful without becoming disorienting?
+7. Are fixed 45°/90° horizontal turns useful for deliberate mine layouts?
+8. Does the three-panel control layout leave enough viewport space while keeping all important actions obvious?
 
 ## Still deliberately excluded
 
-- broken-rock piles and haulage;
+- broken-rock removal logistics;
 - shaft hoisting;
 - workers;
 - power and ventilation;

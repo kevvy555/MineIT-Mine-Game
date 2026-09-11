@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +45,12 @@ import com.mineit.minegame.ui.render.RenderPerformanceStats
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+private enum class ControlPanel {
+    CONTROL,
+    VIEW,
+    OTHER,
+}
+
 @Composable
 fun MineWorldScreen(
     viewModel: MineWorldViewModel = viewModel(),
@@ -56,21 +62,32 @@ fun MineWorldScreen(
     var clipFraction by remember { mutableStateOf(0.18f) }
     var clipFlipped by remember { mutableStateOf(false) }
     var clipEnabled by remember { mutableStateOf(true) }
+    var followDigger by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(true) }
+    var selectedPanel by remember { mutableStateOf(ControlPanel.CONTROL) }
     val lifecycleOwner = LocalLifecycleOwner.current
 
     DisposableEffect(lifecycleOwner, surfaceView) {
+        val activeView = surfaceView
+        if (activeView != null) {
+            activeView.setPerformanceListener { performanceStats = it }
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                activeView.onResume()
+            }
+        }
+
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> surfaceView?.onResume()
-                Lifecycle.Event.ON_PAUSE -> surfaceView?.onPause()
+                Lifecycle.Event.ON_RESUME -> activeView?.onResume()
+                Lifecycle.Event.ON_PAUSE -> activeView?.onPause()
                 else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            surfaceView?.setPerformanceListener(null)
-            surfaceView?.onPause()
+            activeView?.setPerformanceListener(null)
+            activeView?.onPause()
         }
     }
 
@@ -91,38 +108,49 @@ fun MineWorldScreen(
                 factory = { context ->
                     MineSurfaceView(context).also { view ->
                         surfaceView = view
-                        view.setPerformanceListener { performanceStats = it }
                         view.setWorldState(state)
                         view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                        view.setFollowDigger(followDigger)
                     }
                 },
                 update = { view ->
                     view.setWorldState(state)
                     view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                    view.setFollowDigger(followDigger)
                 },
                 modifier = Modifier.fillMaxSize(),
             )
 
-            PerformanceOverlay(
-                stats = performanceStats,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp),
-            )
+            if (showDiagnostics) {
+                PerformanceOverlay(
+                    stats = performanceStats,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp),
+                )
+            }
         }
 
         MineWorldControls(
             state = state,
+            selectedPanel = selectedPanel,
+            onPanelChange = { selectedPanel = it },
             clipAxis = clipAxis,
             clipFraction = clipFraction,
             clipFlipped = clipFlipped,
             clipEnabled = clipEnabled,
+            followDigger = followDigger,
+            showDiagnostics = showDiagnostics,
+            performanceStats = performanceStats,
             onClipAxisChange = { clipAxis = it },
             onClipFractionChange = { clipFraction = it },
             onFlipClip = { clipFlipped = !clipFlipped },
             onToggleClip = { clipEnabled = !clipEnabled },
+            onToggleFollow = { followDigger = !followDigger },
+            onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
             onSteeringChange = viewModel::setSteering,
             onVerticalAngleChange = viewModel::setVerticalAngle,
+            onTurnHeadingBy = viewModel::turnHeadingBy,
             onToggleDigging = viewModel::toggleDigging,
             onResetView = { surfaceView?.resetCamera() },
             onResetMine = viewModel::reset,
@@ -144,13 +172,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.5.0",
+                    text = "MINEIT // 3D GEOLOGY 0.6.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "CHUNKED MESH + XRAY DIGGER",
+                    text = "ASYNC MESH + FOLLOW CAMERA",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -205,7 +233,8 @@ private fun PerformanceOverlay(
             append("mesh ${format1(stats.lastChunkBuildMs)}ms")
             if (stats.chunksRebuilt > 0) append(" ×${stats.chunksRebuilt}")
             append("  cap ${format1(stats.lastCapBuildMs)}ms\n")
-            append("${stats.triangleCount / 1000}k tris  ${stats.cachedChunks} chunks  upload ${format1(stats.lastUploadMs)}ms")
+            append("${stats.triangleCount / 1000}k tris  ${stats.cachedChunks} chunks  upload ${format1(stats.lastUploadMs)}ms\n")
+            append("queue ${stats.queuedChunks}  mesh ${if (stats.meshWorkerBusy) "BUSY" else "IDLE"}  cap ${if (stats.capWorkerBusy) "BUSY" else "IDLE"}")
         },
         color = Color(0xFFE0E6EC),
         style = MaterialTheme.typography.labelSmall,
@@ -218,16 +247,24 @@ private fun PerformanceOverlay(
 @Composable
 private fun MineWorldControls(
     state: MineWorldState,
+    selectedPanel: ControlPanel,
+    onPanelChange: (ControlPanel) -> Unit,
     clipAxis: ClipAxis,
     clipFraction: Float,
     clipFlipped: Boolean,
     clipEnabled: Boolean,
+    followDigger: Boolean,
+    showDiagnostics: Boolean,
+    performanceStats: RenderPerformanceStats,
     onClipAxisChange: (ClipAxis) -> Unit,
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
+    onToggleFollow: () -> Unit,
+    onToggleDiagnostics: () -> Unit,
     onSteeringChange: (Float) -> Unit,
     onVerticalAngleChange: (Float) -> Unit,
+    onTurnHeadingBy: (Float) -> Unit,
     onToggleDigging: () -> Unit,
     onResetView: () -> Unit,
     onResetMine: () -> Unit,
@@ -241,145 +278,277 @@ private fun MineWorldControls(
             )
             .padding(horizontal = 12.dp, vertical = 7.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            ClipAxis.entries.forEach { axis ->
-                AxisButton(
-                    axis = axis,
-                    selected = clipAxis == axis,
-                    onClick = { onClipAxisChange(axis) },
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            OutlinedButton(
-                onClick = onToggleClip,
-                modifier = Modifier.weight(1.2f),
-            ) {
-                Text(if (clipEnabled) "SLICE ON" else "FULL")
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "${clipAxis.name} slice ${clipValue(state, clipAxis, clipFraction).roundToInt()}m",
-                color = Color(0xFFB5BEC8),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.weight(1f),
+        when (selectedPanel) {
+            ControlPanel.CONTROL -> ControlPanelContent(
+                state = state,
+                onSteeringChange = onSteeringChange,
+                onVerticalAngleChange = onVerticalAngleChange,
+                onTurnHeadingBy = onTurnHeadingBy,
+                onToggleDigging = onToggleDigging,
             )
-            OutlinedButton(onClick = onFlipClip) {
-                Text("OTHER SIDE")
-            }
-        }
-        Slider(
-            value = clipFraction,
-            onValueChange = onClipFractionChange,
-            valueRange = 0.02f..0.98f,
-        )
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "STEER",
-                    color = Color(0xFFB5BEC8),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "LEFT",
-                        color = Color(0xFF9AA4B2),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.width(34.dp),
-                    )
-                    Slider(
-                        value = state.steering,
-                        onValueChange = onSteeringChange,
-                        valueRange = MineWorldController.MIN_STEERING..MineWorldController.MAX_STEERING,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "RIGHT",
-                        color = Color(0xFF9AA4B2),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.width(40.dp),
-                    )
-                }
-                Text(
-                    text = "${steeringDescription(state.steering)}  •  HEADING ${state.machineHeadingDegrees.roundToInt()}°",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-
-                Button(
-                    onClick = onToggleDigging,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (state.isDigging) Color(0xFF8C3F3F) else Color(0xFFB7791F),
-                    ),
-                ) {
-                    Text(if (state.isDigging) "STOP" else "START DIGGING")
-                }
-            }
-
-            VerticalAngleControl(
-                value = state.verticalAngleDegrees,
-                onValueChange = onVerticalAngleChange,
+            ControlPanel.VIEW -> ViewPanelContent(
+                state = state,
+                clipAxis = clipAxis,
+                clipFraction = clipFraction,
+                clipFlipped = clipFlipped,
+                clipEnabled = clipEnabled,
+                followDigger = followDigger,
+                onClipAxisChange = onClipAxisChange,
+                onClipFractionChange = onClipFractionChange,
+                onFlipClip = onFlipClip,
+                onToggleClip = onToggleClip,
+                onToggleFollow = onToggleFollow,
+                onResetView = onResetView,
             )
-        }
 
-        Text(
-            text = "ABSOLUTE ANGLE",
-            color = Color(0xFFB5BEC8),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            AnglePresetButton("UP 90", -90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
-            AnglePresetButton("UP 45", -45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
-            AnglePresetButton("LEVEL", 0f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
-            AnglePresetButton("DOWN 45", 45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
-            AnglePresetButton("DOWN 90", 90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+            ControlPanel.OTHER -> OtherPanelContent(
+                showDiagnostics = showDiagnostics,
+                performanceStats = performanceStats,
+                onToggleDiagnostics = onToggleDiagnostics,
+                onResetMine = onResetMine,
+            )
         }
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 5.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
+                .padding(top = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
-                Text("RESET VIEW")
+            ControlPanel.entries.forEach { panel ->
+                PanelButton(
+                    panel = panel,
+                    selected = selectedPanel == panel,
+                    onClick = { onPanelChange(panel) },
+                    modifier = Modifier.weight(1f),
+                )
             }
-            OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
-                Text("RESET MINE")
+        }
+    }
+}
+
+@Composable
+private fun ControlPanelContent(
+    state: MineWorldState,
+    onSteeringChange: (Float) -> Unit,
+    onVerticalAngleChange: (Float) -> Unit,
+    onTurnHeadingBy: (Float) -> Unit,
+    onToggleDigging: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "STEER",
+                color = Color(0xFFB5BEC8),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "LEFT",
+                    color = Color(0xFF9AA4B2),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.width(34.dp),
+                )
+                Slider(
+                    value = state.steering,
+                    onValueChange = onSteeringChange,
+                    valueRange = MineWorldController.MIN_STEERING..MineWorldController.MAX_STEERING,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "RIGHT",
+                    color = Color(0xFF9AA4B2),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.width(40.dp),
+                )
+            }
+            Text(
+                text = "${steeringDescription(state.steering)}  •  HEADING ${state.machineHeadingDegrees.roundToInt()}°",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+            )
+
+            Text(
+                text = if (state.isDigging) "STOP TO USE FIXED TURN" else "FIXED TURN",
+                color = Color(0xFFB5BEC8),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 5.dp),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                QuickTurnButton("L 90", -90f, !state.isDigging, onTurnHeadingBy, Modifier.weight(1f))
+                QuickTurnButton("L 45", -45f, !state.isDigging, onTurnHeadingBy, Modifier.weight(1f))
+                QuickTurnButton("R 45", 45f, !state.isDigging, onTurnHeadingBy, Modifier.weight(1f))
+                QuickTurnButton("R 90", 90f, !state.isDigging, onTurnHeadingBy, Modifier.weight(1f))
             }
         }
 
-        Text(
-            text = "Drag = rotate • pinch = zoom • orange x-ray = digger through rock/slices • stopped steering previews and commits direction on START.",
-            color = Color(0xFF8D98A5),
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 4.dp),
+        VerticalAngleControl(
+            value = state.verticalAngleDegrees,
+            onValueChange = onVerticalAngleChange,
         )
     }
+
+    Text(
+        text = "ABSOLUTE UP / DOWN ANGLE",
+        color = Color(0xFFB5BEC8),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        AnglePresetButton("UP 90", -90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+        AnglePresetButton("UP 45", -45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+        AnglePresetButton("LEVEL", 0f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+        AnglePresetButton("DOWN 45", 45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+        AnglePresetButton("DOWN 90", 90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+    }
+
+    Button(
+        onClick = onToggleDigging,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (state.isDigging) Color(0xFF8C3F3F) else Color(0xFFB7791F),
+        ),
+    ) {
+        Text(if (state.isDigging) "STOP" else "START DIGGING")
+    }
+}
+
+@Composable
+private fun ViewPanelContent(
+    state: MineWorldState,
+    clipAxis: ClipAxis,
+    clipFraction: Float,
+    clipFlipped: Boolean,
+    clipEnabled: Boolean,
+    followDigger: Boolean,
+    onClipAxisChange: (ClipAxis) -> Unit,
+    onClipFractionChange: (Float) -> Unit,
+    onFlipClip: () -> Unit,
+    onToggleClip: () -> Unit,
+    onToggleFollow: () -> Unit,
+    onResetView: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        ClipAxis.entries.forEach { axis ->
+            AxisButton(
+                axis = axis,
+                selected = clipAxis == axis,
+                onClick = { onClipAxisChange(axis) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+        ToggleButton(
+            selected = clipEnabled,
+            selectedText = "SLICE ON",
+            unselectedText = "FULL",
+            onClick = onToggleClip,
+            modifier = Modifier.weight(1.25f),
+        )
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "${clipAxis.name} slice ${clipValue(state, clipAxis, clipFraction).roundToInt()}m",
+            color = Color(0xFFB5BEC8),
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedButton(onClick = onFlipClip) {
+            Text(if (clipFlipped) "FIRST SIDE" else "OTHER SIDE")
+        }
+    }
+    Slider(
+        value = clipFraction,
+        onValueChange = onClipFractionChange,
+        valueRange = 0.02f..0.98f,
+    )
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        ToggleButton(
+            selected = followDigger,
+            selectedText = "FOLLOW DIGGER ON",
+            unselectedText = "FOLLOW DIGGER OFF",
+            onClick = onToggleFollow,
+            modifier = Modifier.weight(1.4f),
+        )
+        OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
+            Text("RESET VIEW")
+        }
+    }
+
+    Text(
+        text = "Pinch now zooms much closer. Follow keeps the camera centred on the machine while it moves; the orange x-ray stays visible through rock and slices.",
+        color = Color(0xFF8D98A5),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 5.dp),
+    )
+}
+
+@Composable
+private fun OtherPanelContent(
+    showDiagnostics: Boolean,
+    performanceStats: RenderPerformanceStats,
+    onToggleDiagnostics: () -> Unit,
+    onResetMine: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        ToggleButton(
+            selected = showDiagnostics,
+            selectedText = "DIAGNOSTICS ON",
+            unselectedText = "DIAGNOSTICS OFF",
+            onClick = onToggleDiagnostics,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
+            Text("RESET MINE")
+        }
+    }
+
+    Text(
+        text = "Renderer: ${performanceStats.framesPerSecond} fps • ${performanceStats.triangleCount / 1000}k tris • " +
+            "${performanceStats.cachedChunks} cached chunks • ${performanceStats.queuedChunks} queued • " +
+            "mesh ${if (performanceStats.meshWorkerBusy) "busy" else "idle"} • cap ${if (performanceStats.capWorkerBusy) "busy" else "idle"}",
+        color = Color(0xFFB5BEC8),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 6.dp),
+    )
+    Text(
+        text = "Mesh generation now runs away from the OpenGL render thread. Active excavation remeshes by distance rather than every simulation tick, then refines touched chunks when digging stops.",
+        color = Color(0xFF8D98A5),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 @Composable
@@ -420,6 +589,24 @@ private fun VerticalAngleControl(
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
         )
+    }
+}
+
+@Composable
+private fun QuickTurnButton(
+    label: String,
+    degrees: Float,
+    enabled: Boolean,
+    onClick: (Float) -> Unit,
+    modifier: Modifier,
+) {
+    OutlinedButton(
+        onClick = { onClick(degrees) },
+        enabled = enabled,
+        modifier = modifier.height(34.dp),
+        contentPadding = PaddingValues(horizontal = 2.dp),
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -470,6 +657,54 @@ private fun AxisButton(
     } else {
         OutlinedButton(onClick = onClick, modifier = modifier) {
             Text(axis.name)
+        }
+    }
+}
+
+@Composable
+private fun ToggleButton(
+    selected: Boolean,
+    selectedText: String,
+    unselectedText: String,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF356B75)),
+        ) {
+            Text(selectedText, style = MaterialTheme.typography.labelSmall)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier) {
+            Text(unselectedText, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun PanelButton(
+    panel: ControlPanel,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier.height(40.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF356B75)),
+        ) {
+            Text(panel.name, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier.height(40.dp),
+        ) {
+            Text(panel.name, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
         }
     }
 }

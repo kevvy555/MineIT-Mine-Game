@@ -3,10 +3,13 @@ package com.mineit.minegame.ui.render
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import com.mineit.minegame.domain.MinePoint3D
+import com.mineit.minegame.domain.MineWorldGeometry
 import com.mineit.minegame.domain.MineWorldState
 import com.mineit.minegame.domain.TunnelSegment
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicLong
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.cos
@@ -24,6 +27,9 @@ internal data class RenderPerformanceStats(
     val triangleCount: Int = 0,
     val cachedChunks: Int = 0,
     val chunksRebuilt: Int = 0,
+    val queuedChunks: Int = 0,
+    val meshWorkerBusy: Boolean = false,
+    val capWorkerBusy: Boolean = false,
 )
 
 internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
@@ -43,9 +49,6 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var clipEnabled = true
 
     @Volatile
-    private var capDirty = true
-
-    @Volatile
     private var machineDirty = true
 
     @Volatile
@@ -59,6 +62,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     @Volatile
     private var zoomScale = 1f
+
+    @Volatile
+    private var followDigger = false
+
+    @Volatile
+    private var capBuildPending = true
+
+    private val capRevision = AtomicLong(1L)
+    private val meshBuildCoordinator = AsyncMeshBuildCoordinator()
 
     private var surfaceWidth = 1
     private var surfaceHeight = 1
@@ -77,8 +89,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private val chunkMeshes = linkedMapOf<ChunkKey, CachedChunk>()
     private val segmentIndex = mutableMapOf<ChunkKey, LinkedHashSet<TunnelSegment>>()
     private val pendingChunkBuilds = linkedMapOf<ChunkKey, Float>()
+    private val chunkRevisions = mutableMapOf<ChunkKey, Long>()
     private val chunksTouchedDuringDigging = linkedSetOf<ChunkKey>()
+    private val activeDirtyChunks = linkedSetOf<ChunkKey>()
+    private var activeCapDirty = false
+    private var lastActiveRemeshPoint: MinePoint3D? = null
     private var processedState: MineWorldState? = null
+    private var pipelineGeneration = 1L
 
     private var capMesh: GlMesh? = null
     private var machineMesh: GlMesh? = null
@@ -105,7 +122,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var lastChunkBuildMs = 0f
     private var lastCapBuildMs = 0f
     private var lastUploadMs = 0f
-    private var lastChunksRebuilt = 0
+    private var chunksRebuiltSinceStats = 0
 
     fun setWorldState(state: MineWorldState) {
         val previous = worldState
@@ -121,7 +138,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             machineDirty = true
         }
         if (state.oreBodyDiscovered != previous.oreBodyDiscovered) {
-            capDirty = true
+            markCapDirty()
         }
     }
 
@@ -133,12 +150,16 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             flipped != clipFlipped ||
             enabled != clipEnabled
         ) {
-            capDirty = true
+            markCapDirty()
         }
         clipAxis = axis
         clipFraction = boundedFraction
         clipFlipped = flipped
         clipEnabled = enabled
+    }
+
+    fun setFollowDigger(enabled: Boolean) {
+        followDigger = enabled
     }
 
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
@@ -152,7 +173,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     fun zoom(scaleFactor: Float) {
         if (scaleFactor <= 0f) return
-        zoomScale = (zoomScale / scaleFactor).coerceIn(0.42f, 2.8f)
+        zoomScale = (zoomScale / scaleFactor).coerceIn(MIN_ZOOM_SCALE, MAX_ZOOM_SCALE)
     }
 
     fun resetCamera() {
@@ -172,11 +193,17 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         chunkMeshes.clear()
         segmentIndex.clear()
         pendingChunkBuilds.clear()
+        chunkRevisions.clear()
         chunksTouchedDuringDigging.clear()
+        activeDirtyChunks.clear()
+        activeCapDirty = false
+        lastActiveRemeshPoint = null
         processedState = null
         capMesh = null
         machineMesh = null
-        capDirty = true
+        pipelineGeneration += 1L
+        capBuildPending = true
+        capRevision.incrementAndGet()
         machineDirty = true
         statsWindowStartNanos = System.nanoTime()
         framesInStatsWindow = 0
@@ -191,8 +218,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         val state = worldState
         processWorldChanges(state)
-        processChunkBuildQueue(state)
-        rebuildCapIfNeeded(state)
+        consumeCompletedChunkBuilds()
+        consumeCompletedCapBuilds()
+        scheduleNextChunkBuild(state)
+        scheduleCapBuild(state)
         rebuildMachineIfNeeded(state)
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
@@ -202,11 +231,18 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         GLES20.glUseProgram(program)
         GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvpMatrix, 0)
         GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
-        applyClipUniforms(state, enabled = clipEnabled)
         GLES20.glUniform1f(alphaLocation, 1f)
 
+        applyClipUniforms(state, enabled = clipEnabled)
         chunkMeshes.values.forEach { cached -> drawMesh(cached.mesh) }
+
+        // A CT cap already lies exactly on the cut plane. Do not clip the old cap with the newest
+        // plane while an asynchronous replacement is building; keeping the last valid cap visible
+        // prevents the directional "hollow box" flash when dragging deeper through Z.
+        applyClipUniforms(state, enabled = false)
         drawMesh(capMesh)
+
+        applyClipUniforms(state, enabled = clipEnabled)
         drawMesh(machineMesh)
 
         machineMesh?.let { mesh ->
@@ -238,21 +274,32 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
         if (!previous.isDigging && state.isDigging) {
             chunksTouchedDuringDigging.clear()
+            activeDirtyChunks.clear()
+            activeCapDirty = false
+            lastActiveRemeshPoint = state.tunnel.end
         }
 
-        if (state.extent != previous.extent) {
+        val extentChanged = state.extent != previous.extent
+        if (extentChanged) {
             val previousKeys = ChunkMeshPlanner.allChunks(previous.extent)
             val currentKeys = ChunkMeshPlanner.allChunks(state.extent)
             val newKeys = currentKeys - previousKeys
 
             newKeys.forEach { key ->
                 populateSegmentIndexForChunk(state, key)
-                markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+                if (ChunkMeshPlanner.requiresMesh(key, state.extent, segmentIndex[key]?.isNotEmpty() == true)) {
+                    markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+                }
             }
+
             ChunkMeshPlanner.chunksWhoseBoundaryChanged(previous.extent, state.extent).forEach { key ->
-                markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+                if (ChunkMeshPlanner.requiresMesh(key, state.extent, segmentIndex[key]?.isNotEmpty() == true)) {
+                    markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+                } else {
+                    removeCachedChunk(key)
+                }
             }
-            capDirty = true
+            markCapDirty()
         }
 
         if (state.tunnel.points.size > previous.tunnel.points.size) {
@@ -268,8 +315,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 )
                 affected.forEach { key ->
                     segmentIndex.getOrPut(key) { linkedSetOf() }.add(segment)
-                    markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
                 }
+                activeDirtyChunks += affected
                 if (state.isDigging || previous.isDigging) {
                     chunksTouchedDuringDigging += affected
                 }
@@ -284,39 +331,72 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                         paddingMetres = 1f,
                     )
                 ) {
-                    capDirty = true
+                    activeCapDirty = true
                 }
+            }
+
+            if (state.isDigging && shouldFlushActiveRemesh(state, extentChanged)) {
+                flushActiveRemesh(state)
             }
         }
 
         if (previous.isDigging && !state.isDigging) {
-            chunksTouchedDuringDigging.forEach { key ->
+            if (activeCapDirty) markCapDirty()
+            (chunksTouchedDuringDigging + activeDirtyChunks).forEach { key ->
                 markChunkForBuild(key, MineMeshBuilder.REFINED_GRID_STEP_METRES)
             }
             chunksTouchedDuringDigging.clear()
+            activeDirtyChunks.clear()
+            activeCapDirty = false
+            lastActiveRemeshPoint = null
         }
 
         if (state.oreBodyDiscovered != previous.oreBodyDiscovered) {
-            capDirty = true
+            markCapDirty()
         }
 
         processedState = state
     }
 
+    private fun shouldFlushActiveRemesh(state: MineWorldState, extentChanged: Boolean): Boolean {
+        if (extentChanged) return true
+        val previousPoint = lastActiveRemeshPoint ?: return true
+        return MineWorldGeometry.distance(previousPoint, state.tunnel.end) >= ACTIVE_REMESH_DISTANCE_METRES
+    }
+
+    private fun flushActiveRemesh(state: MineWorldState) {
+        activeDirtyChunks.forEach { key ->
+            markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+        }
+        activeDirtyChunks.clear()
+        if (activeCapDirty) {
+            markCapDirty()
+            activeCapDirty = false
+        }
+        lastActiveRemeshPoint = state.tunnel.end
+    }
+
     private fun resetChunkPipeline(state: MineWorldState) {
+        pipelineGeneration += 1L
         chunkMeshes.values.forEach { deleteMesh(it.mesh) }
         chunkMeshes.clear()
         deleteMesh(capMesh)
         capMesh = null
         segmentIndex.clear()
         pendingChunkBuilds.clear()
+        chunkRevisions.clear()
         chunksTouchedDuringDigging.clear()
+        activeDirtyChunks.clear()
+        activeCapDirty = false
 
         state.tunnel.segments.forEach { segment -> indexSegment(state, segment) }
         ChunkMeshPlanner.allChunks(state.extent).forEach { key ->
-            markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+            if (ChunkMeshPlanner.requiresMesh(key, state.extent, segmentIndex[key]?.isNotEmpty() == true)) {
+                markChunkForBuild(key, MineMeshBuilder.ACTIVE_GRID_STEP_METRES)
+            }
         }
-        capDirty = true
+        lastActiveRemeshPoint = if (state.isDigging) state.tunnel.end else null
+        markCapDirty()
         machineDirty = true
     }
 
@@ -345,78 +425,116 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private fun markChunkForBuild(key: ChunkKey, gridStepMetres: Float) {
         val existing = pendingChunkBuilds[key]
         pendingChunkBuilds[key] = if (existing == null) gridStepMetres else minOf(existing, gridStepMetres)
+        chunkRevisions[key] = (chunkRevisions[key] ?: 0L) + 1L
     }
 
-    private fun processChunkBuildQueue(state: MineWorldState) {
-        val maxBuilds = if (state.isDigging) MAX_ACTIVE_CHUNK_BUILDS_PER_FRAME else MAX_IDLE_CHUNK_BUILDS_PER_FRAME
-        var rebuilt = 0
-        var buildNanos = 0L
-        var uploadNanos = 0L
+    private fun removeCachedChunk(key: ChunkKey) {
+        pendingChunkBuilds.remove(key)
+        chunkRevisions[key] = (chunkRevisions[key] ?: 0L) + 1L
+        deleteMesh(chunkMeshes.remove(key)?.mesh)
+    }
 
-        while (rebuilt < maxBuilds && pendingChunkBuilds.isNotEmpty()) {
-            val entry = pendingChunkBuilds.entries.first()
-            val key = entry.key
-            val gridStep = entry.value
-            pendingChunkBuilds.remove(key)
-
-            val buildStart = System.nanoTime()
-            val mesh = MineMeshBuilder.buildChunk(
-                state = state,
-                key = key,
-                tunnelSegments = segmentIndex[key].orEmpty(),
-                gridStepMetres = gridStep,
-            )
-            buildNanos += System.nanoTime() - buildStart
+    private fun consumeCompletedChunkBuilds() {
+        while (true) {
+            val result = meshBuildCoordinator.pollChunk() ?: break
+            if (
+                result.pipelineGeneration != pipelineGeneration ||
+                result.revision != chunkRevisions[result.key]
+            ) {
+                continue
+            }
 
             val uploadStart = System.nanoTime()
-            val uploaded = uploadMesh(mesh)
-            uploadNanos += System.nanoTime() - uploadStart
-
-            val previous = chunkMeshes.put(key, CachedChunk(uploaded, gridStep))
+            val uploaded = uploadMesh(result.mesh)
+            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
+            val previous = chunkMeshes.put(result.key, CachedChunk(uploaded, result.gridStepMetres))
             deleteMesh(previous?.mesh)
-            rebuilt += 1
-        }
-
-        if (rebuilt > 0) {
-            lastChunkBuildMs = nanosToMs(buildNanos)
-            lastUploadMs = nanosToMs(uploadNanos)
-            lastChunksRebuilt = rebuilt
+            lastChunkBuildMs = result.buildMs
+            chunksRebuiltSinceStats += 1
         }
     }
 
-    private fun rebuildCapIfNeeded(state: MineWorldState) {
-        if (!capDirty) return
+    private fun scheduleNextChunkBuild(state: MineWorldState) {
+        if (meshBuildCoordinator.isChunkBusy() || pendingChunkBuilds.isEmpty()) return
 
-        val start = System.nanoTime()
-        val newMesh = if (clipEnabled) {
-            val clipValue = MineMeshBuilder.clipValue(state, clipAxis, clipFraction)
-            val nearbySegments = linkedSetOf<TunnelSegment>()
-            ChunkMeshPlanner.chunksNearSlice(
-                extent = state.extent,
-                axis = clipAxis,
-                clipValue = clipValue,
-                paddingMetres = state.tunnel.radiusMetres + 2f,
-            ).forEach { key ->
-                segmentIndex[key]?.let(nearbySegments::addAll)
+        val next = pendingChunkBuilds.entries.minByOrNull { entry ->
+            MineWorldGeometry.distance(entry.key.bounds().centre, state.tunnel.end)
+        } ?: return
+        val key = next.key
+        val gridStep = next.value
+        val revision = chunkRevisions[key] ?: return
+        val accepted = meshBuildCoordinator.trySubmitChunk(
+            ChunkBuildRequest(
+                pipelineGeneration = pipelineGeneration,
+                revision = revision,
+                key = key,
+                state = state,
+                tunnelSegments = segmentIndex[key].orEmpty().toList(),
+                gridStepMetres = gridStep,
+            ),
+        )
+        if (accepted) pendingChunkBuilds.remove(key)
+    }
+
+    private fun consumeCompletedCapBuilds() {
+        while (true) {
+            val result = meshBuildCoordinator.pollCap() ?: break
+            if (
+                result.pipelineGeneration != pipelineGeneration ||
+                result.revision != capRevision.get()
+            ) {
+                continue
             }
-            MineMeshBuilder.buildCutCap(
+
+            val uploadStart = System.nanoTime()
+            val uploaded = uploadMesh(result.mesh)
+            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
+            deleteMesh(capMesh)
+            capMesh = uploaded
+            lastCapBuildMs = result.buildMs
+        }
+    }
+
+    private fun scheduleCapBuild(state: MineWorldState) {
+        if (!capBuildPending) return
+
+        if (!clipEnabled) {
+            deleteMesh(capMesh)
+            capMesh = null
+            capBuildPending = false
+            return
+        }
+        if (meshBuildCoordinator.isCapBusy()) return
+
+        val clipValue = MineMeshBuilder.clipValue(state, clipAxis, clipFraction)
+        val nearbySegments = linkedSetOf<TunnelSegment>()
+        ChunkMeshPlanner.chunksNearSlice(
+            extent = state.extent,
+            axis = clipAxis,
+            clipValue = clipValue,
+            paddingMetres = state.tunnel.radiusMetres + 2f,
+        ).forEach { key ->
+            segmentIndex[key]?.let(nearbySegments::addAll)
+        }
+
+        val revision = capRevision.get()
+        val accepted = meshBuildCoordinator.trySubmitCap(
+            CapBuildRequest(
+                pipelineGeneration = pipelineGeneration,
+                revision = revision,
                 state = state,
                 axis = clipAxis,
                 fraction = clipFraction,
                 flipped = clipFlipped,
-                tunnelSegments = nearbySegments,
-            )
-        } else {
-            MineMesh(FloatArray(0), 0)
-        }
-        lastCapBuildMs = nanosToMs(System.nanoTime() - start)
+                tunnelSegments = nearbySegments.toList(),
+            ),
+        )
+        if (accepted) capBuildPending = false
+    }
 
-        val uploadStart = System.nanoTime()
-        val uploaded = uploadMesh(newMesh)
-        lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
-        deleteMesh(capMesh)
-        capMesh = uploaded
-        capDirty = false
+    private fun markCapDirty() {
+        capRevision.incrementAndGet()
+        capBuildPending = true
     }
 
     private fun rebuildMachineIfNeeded(state: MineWorldState) {
@@ -485,12 +603,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     private fun updateMatrices(state: MineWorldState) {
         val bounds = state.bounds
-        val centre = bounds.centre
-        val targetX = centre.x
-        val targetY = -centre.z
-        val targetZ = centre.y
+        val target = if (followDigger) state.tunnel.end else bounds.centre
+        val targetX = target.x
+        val targetY = -target.z
+        val targetZ = target.y
         val largestSpan = max(bounds.width, max(bounds.height, bounds.depth))
-        val distance = largestSpan * 2.25f * zoomScale
+        val framingSpan = if (followDigger) FOLLOW_DIGGER_FRAMING_SPAN_METRES else largestSpan
+        val distance = framingSpan * 2.25f * zoomScale
         val yaw = Math.toRadians(yawDegrees.toDouble())
         val pitch = Math.toRadians(pitchDegrees.toDouble())
         val horizontal = cos(pitch).toFloat() * distance
@@ -517,8 +636,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             0,
             42f,
             surfaceWidth.toFloat() / surfaceHeight.toFloat(),
-            0.5f,
-            largestSpan * 10f,
+            0.15f,
+            max(largestSpan * 12f, distance * 12f),
         )
         Matrix.multiplyMM(viewModelMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, viewModelMatrix, 0)
@@ -570,12 +689,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 lastUploadMs = lastUploadMs,
                 triangleCount = totalVertices / 3,
                 cachedChunks = chunkMeshes.size,
-                chunksRebuilt = lastChunksRebuilt,
+                chunksRebuilt = chunksRebuiltSinceStats,
+                queuedChunks = pendingChunkBuilds.size,
+                meshWorkerBusy = meshBuildCoordinator.isChunkBusy(),
+                capWorkerBusy = meshBuildCoordinator.isCapBusy(),
             ),
         )
         framesInStatsWindow = 0
         statsWindowStartNanos = now
-        lastChunksRebuilt = 0
+        chunksRebuiltSinceStats = 0
     }
 
     private fun createProgram(vertexSource: String, fragmentSource: String): Int {
@@ -613,10 +735,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     private companion object {
         const val FLOATS_PER_VERTEX = 9
-        const val XRAY_MACHINE_ALPHA = 0.32f
-        const val MAX_ACTIVE_CHUNK_BUILDS_PER_FRAME = 1
-        const val MAX_IDLE_CHUNK_BUILDS_PER_FRAME = 2
-        const val STATS_WINDOW_NANOS = 750_000_000L
+        const val XRAY_MACHINE_ALPHA = 0.38f
+        const val STATS_WINDOW_NANOS = 500_000_000L
+        const val ACTIVE_REMESH_DISTANCE_METRES = 1.2f
+        const val FOLLOW_DIGGER_FRAMING_SPAN_METRES = 36f
+        const val MIN_ZOOM_SCALE = 0.08f
+        const val MAX_ZOOM_SCALE = 5f
 
         const val VERTEX_SHADER = """
             uniform mat4 uMvp;

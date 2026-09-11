@@ -27,6 +27,10 @@ class MineWorldViewModel : ViewModel() {
         mutableState.update { MineWorldController.setVerticalAngle(it, degrees) }
     }
 
+    fun turnHeadingBy(degrees: Float) {
+        mutableState.update { MineWorldController.turnHeadingBy(it, degrees) }
+    }
+
     fun toggleDigging() {
         if (mutableState.value.isDigging) {
             diggingJob?.cancel()
@@ -56,8 +60,8 @@ class MineWorldViewModel : ViewModel() {
     }
 
     private companion object {
-        // Chunk-local remeshing makes a faster simulation cadence practical without rebuilding
-        // the whole geological volume each time the cutter advances.
+        // Domain state moves smoothly at 10 Hz. The renderer independently throttles expensive
+        // geological remeshing, so machine motion no longer forces a mesh rebuild every tick.
         const val DIG_TICK_MILLIS = 100L
         const val DIG_TICK_SECONDS = 0.10f
     }

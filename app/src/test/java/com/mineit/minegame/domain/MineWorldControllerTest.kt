@@ -41,6 +41,18 @@ class MineWorldControllerTest {
     }
 
     @Test
+    fun fixedHorizontalTurnsUseVisibleMachineDirectionAndRecentreSteering() {
+        val preview = MineWorldController.setSteering(MineWorldState(), 0.5f)
+        val left = MineWorldController.turnHeadingBy(preview, -90f)
+        val right = MineWorldController.turnHeadingBy(left, 45f)
+
+        assertEquals(340f, left.headingDegrees, 0.001f)
+        assertEquals(0f, left.steering, 0.001f)
+        assertEquals(25f, right.headingDegrees, 0.001f)
+        assertEquals(25f, right.machineHeadingDegrees, 0.001f)
+    }
+
+    @Test
     fun steeringCurvesHeadingWhileMachineMoves() {
         var state = MineWorldController.startDigging(MineWorldState())
         state = MineWorldController.setSteering(state, 1f)

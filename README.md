@@ -2,49 +2,59 @@
 
 Native Android mining-game prototype in the MineIT universe.
 
-## Current prototype — 0.5.0
+## Current prototype — 0.6.0
 
-The mine is a genuine **3D geological volume** with a lightweight native OpenGL renderer and renderer-independent domain rules.
+The mine is a genuine **3D geological volume** with renderer-independent gameplay rules and a lightweight native OpenGL renderer.
 
-0.5 is the first performance-oriented pass on the solid CT concept. It keeps the 0.4 interaction model but changes how geometry is generated and drawn so the approach can scale on a phone:
+0.6 builds on the solid CT-scan concept with a second performance pass and a simpler mobile control layout:
 
-- the mine remains true X/Y/Z data;
-- X/Y/Z CT slices still create solid geological cut faces with real tunnel holes;
-- the grass surface, continuous digging and connected-vein discovery remain intact;
-- geological rendering is now cached **per 24 m chunk** instead of rebuilding the entire visible world whenever the cutter advances;
-- each chunk has a spatial list of only the tunnel segments capable of affecting it;
-- active excavation uses a coarser local mesh, then touched chunks receive a finer refinement pass after digging stops;
-- OpenGL geometry is uploaded into cached GPU vertex buffers rather than retained as one large client-side buffer;
-- the CT cap is only rebuilt when the slice changes, the world extent changes, ore discovery changes, or new excavation reaches the active slice plane;
-- ore exposure checks are incremental: a new excavation segment is checked rather than rescanning the full historic tunnel;
-- an on-screen performance panel reports FPS, frame time, chunk-mesh build time, CT-cap build time, triangle count, cached chunks and GPU-buffer upload time;
-- the mining machine is deliberately asymmetric with a bright forward spine, making heading and slope readable;
-- the machine has an always-visible low-alpha **x-ray pass**, so its real 3D position remains visible even behind rock or on the removed side of a CT slice;
-- while stopped, LEFT/RIGHT steering previews the direction of the whole machine; pressing START commits that heading and recentres steering;
-- while digging, LEFT/RIGHT returns to continuous turn-rate steering;
-- vertical angle now supports the full -90° to +90° range;
-- absolute presets provide **UP 90, UP 45, LEVEL, DOWN 45 and DOWN 90** for shafts and level drives.
+- X/Y/Z slices expose solid geological cut faces with real tunnel holes;
+- the directional hollow-cap bug is fixed by retaining the last valid CT cap until the replacement is ready;
+- geological chunk and CT-cap mesh generation now runs on background CPU workers rather than the OpenGL render thread;
+- the active face is remeshed by excavation distance instead of every 100 ms simulation tick;
+- untouched interior chunks are skipped entirely until excavation reaches them;
+- touched chunks still receive a finer refinement pass after digging stops;
+- cached GPU buffers remain chunk-local;
+- diagnostics now report real FPS, frame time, CPU mesh/cap build time, upload time, triangle count, chunk count, queue depth and worker state;
+- pinch zoom can move much closer to the geology and mining machine;
+- **FOLLOW DIGGER** keeps the camera centred on the machine as the mine grows;
+- the orange x-ray machine remains visible through solid rock and CT clipping;
+- controls are split into **CONTROL / VIEW / OTHER** panels selected from three persistent buttons at the bottom;
+- stopped steering still visibly previews the machine heading;
+- fixed horizontal turns provide **L 90, L 45, R 45 and R 90**;
+- vertical absolute presets remain **UP 90, UP 45, LEVEL, DOWN 45 and DOWN 90**.
 
 ## Controls
 
-- Drag the 3D view to rotate it.
-- Pinch to zoom.
-- Select X, Y or Z and move the slice slider to move the geological cut plane.
-- **OTHER SIDE** reverses which side of the cut is removed.
-- **SLICE ON / FULL** switches between a CT-style cutaway and the complete geological volume.
-- While stopped, use **STEER — LEFT / RIGHT** to preview the machine heading. **START DIGGING** commits that heading.
-- While digging, LEFT/RIGHT curves the tunnel.
-- Use the vertical **ANGLE — UP / DOWN** slider for arbitrary slope, or an absolute angle preset.
-- **DOWN 90** produces a vertical shaft; **LEVEL** changes to a horizontal drive.
-- The translucent orange machine is intentionally visible through rock and clipping as an x-ray locator.
-- **RESET VIEW** resets the camera; **RESET MINE** restores the untouched surface start.
+### CONTROL
 
-Purple mineralisation is hidden until first physical contact. After discovery, the connected vein becomes available for geological inspection through the slice views.
+- Use **STEER — LEFT / RIGHT** for a visible direction preview while stopped and gradual turning while digging.
+- When stopped, use **L 90 / L 45 / R 45 / R 90** for exact relative horizontal turns.
+- Use the vertical **ANGLE — UP / DOWN** slider for arbitrary slope.
+- Use the absolute slope presets for exact shaft/drive angles.
+- **DOWN 90** creates a vertical shaft; **LEVEL** changes to a horizontal drive.
+- Press **START DIGGING / STOP** for continuous excavation.
+
+### VIEW
+
+- Drag to orbit the 3D mine and pinch to zoom.
+- Select **X / Y / Z** and move the slice slider to inspect the geology like a CT scan.
+- **OTHER SIDE** reverses which side of the cut remains visible.
+- **SLICE ON / FULL** switches between cutaway and the complete geological volume.
+- **FOLLOW DIGGER** centres the camera on the machine as it moves.
+- **RESET VIEW** restores the default orbit/zoom.
+
+### OTHER
+
+- Toggle the on-screen renderer diagnostics.
+- **RESET MINE** restores the untouched surface start.
+
+Purple mineralisation remains hidden until first physical contact. After discovery, the connected vein becomes visible where CT slices intersect it.
 
 ## Architecture
 
-- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, continuous excavation, discovery and material accounting.
+- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, excavation, discovery and material accounting.
 - `ui/` — Compose controls, continuous-dig loop and Android lifecycle/view state.
-- `ui/render/` — chunk planning/spatial indexing, OpenGL ES camera, VBO cache, clipping, CT cap generation, x-ray machine and generated geological triangle meshes.
+- `ui/render/` — chunk planning/spatial indexing, asynchronous mesh workers, OpenGL ES camera/VBO cache, clipping, CT caps and x-ray machine rendering.
 
 See `docs/THREE_D_WORLD_POC.md` for the current design direction.

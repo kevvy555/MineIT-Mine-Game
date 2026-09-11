@@ -27,8 +27,8 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         preserveEGLContextOnPause = true
         setRenderer(mineRenderer)
-        // Continuous mode is deliberate for this performance POC: it gives a real FPS signal on
-        // device and keeps camera/x-ray presentation smooth while chunk remeshing is measured.
+        // Continuous mode is deliberate while performance work is active: it provides a genuine
+        // FPS signal and keeps camera/x-ray motion smooth even while CPU mesh work runs off-thread.
         renderMode = RENDERMODE_CONTINUOUSLY
         mineRenderer.setPerformanceListener { stats ->
             post { performanceListener?.invoke(stats) }
@@ -41,6 +41,10 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
 
     fun setClip(axis: ClipAxis, fraction: Float, flipped: Boolean, enabled: Boolean) {
         mineRenderer.setClip(axis, fraction, flipped, enabled)
+    }
+
+    fun setFollowDigger(enabled: Boolean) {
+        mineRenderer.setFollowDigger(enabled)
     }
 
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {

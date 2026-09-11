@@ -30,6 +30,15 @@ object MineWorldController {
             ),
         )
 
+    /**
+     * Applies a fixed horizontal turn relative to the direction currently shown by the machine.
+     * The steering control is recentered so the machine visibly settles on the new heading.
+     */
+    fun turnHeadingBy(state: MineWorldState, degrees: Float): MineWorldState = state.copy(
+        headingDegrees = normalizeHeading(state.machineHeadingDegrees + degrees),
+        steering = 0f,
+    )
+
     fun startDigging(state: MineWorldState): MineWorldState {
         if (
             state.tunnel.end.z <= SURFACE_EPSILON_METRES &&
