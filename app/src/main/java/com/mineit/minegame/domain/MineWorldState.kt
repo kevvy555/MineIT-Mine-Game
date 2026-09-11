@@ -8,6 +8,11 @@ data class MinePoint3D(
     val z: Float,
 )
 
+data class TunnelSegment(
+    val start: MinePoint3D,
+    val end: MinePoint3D,
+)
+
 data class ChunkExtent(
     val minChunkX: Int,
     val maxChunkX: Int,
@@ -55,6 +60,9 @@ data class TunnelGeometry(
     val radiusMetres: Float,
 ) {
     val end: MinePoint3D get() = points.last()
+
+    val segments: List<TunnelSegment>
+        get() = points.zipWithNext { start, end -> TunnelSegment(start, end) }
 }
 
 data class OreBodyNode(
@@ -82,6 +90,20 @@ data class MineWorldState(
 
     val wasteRockTonnes: Float
         get() = excavatedVolumeCubicMetres * MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE
+
+    /**
+     * While stopped, the steering slider previews the direction that will be committed when
+     * digging starts. While digging, headingDegrees is the physical direction and steering is
+     * a turn-rate input.
+     */
+    val machineHeadingDegrees: Float
+        get() = normalizeHeading(
+            if (isDigging) {
+                headingDegrees
+            } else {
+                headingDegrees + (steering * MineWorldController.STEERING_PREVIEW_DEGREES)
+            },
+        )
 }
 
 object MineWorldContent {
@@ -114,3 +136,8 @@ object MineWorldContent {
 
 internal fun cylinderVolume(radiusMetres: Float, lengthMetres: Float): Float =
     (PI * radiusMetres * radiusMetres * lengthMetres).toFloat()
+
+internal fun normalizeHeading(degrees: Float): Float {
+    val normalized = degrees % 360f
+    return if (normalized < 0f) normalized + 360f else normalized
+}

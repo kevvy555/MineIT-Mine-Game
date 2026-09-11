@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,6 +41,7 @@ import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
 import com.mineit.minegame.ui.render.ClipAxis
 import com.mineit.minegame.ui.render.MineSurfaceView
+import com.mineit.minegame.ui.render.RenderPerformanceStats
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -49,6 +51,7 @@ fun MineWorldScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var surfaceView by remember { mutableStateOf<MineSurfaceView?>(null) }
+    var performanceStats by remember { mutableStateOf(RenderPerformanceStats()) }
     var clipAxis by remember { mutableStateOf(ClipAxis.X) }
     var clipFraction by remember { mutableStateOf(0.18f) }
     var clipFlipped by remember { mutableStateOf(false) }
@@ -66,6 +69,7 @@ fun MineWorldScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            surfaceView?.setPerformanceListener(null)
             surfaceView?.onPause()
         }
     }
@@ -78,22 +82,34 @@ fun MineWorldScreen(
     ) {
         MineWorldHeader(state)
 
-        AndroidView(
-            factory = { context ->
-                MineSurfaceView(context).also { view ->
-                    surfaceView = view
-                    view.setWorldState(state)
-                    view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
-                }
-            },
-            update = { view ->
-                view.setWorldState(state)
-                view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
-            },
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
-        )
+        ) {
+            AndroidView(
+                factory = { context ->
+                    MineSurfaceView(context).also { view ->
+                        surfaceView = view
+                        view.setPerformanceListener { performanceStats = it }
+                        view.setWorldState(state)
+                        view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                    }
+                },
+                update = { view ->
+                    view.setWorldState(state)
+                    view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            PerformanceOverlay(
+                stats = performanceStats,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp),
+            )
+        }
 
         MineWorldControls(
             state = state,
@@ -119,7 +135,7 @@ private fun MineWorldHeader(state: MineWorldState) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 14.dp, vertical = 7.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -128,13 +144,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.4.0",
+                    text = "MINEIT // 3D GEOLOGY 0.5.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "SOLID CT MINE + CONTINUOUS DIGGING",
+                    text = "CHUNKED MESH + XRAY DIGGER",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -150,7 +166,7 @@ private fun MineWorldHeader(state: MineWorldState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 5.dp),
+                .padding(top = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             HeaderStat("DEPTH", "${state.depthMetres.roundToInt()}m")
@@ -179,6 +195,27 @@ private fun HeaderStat(label: String, value: String) {
 }
 
 @Composable
+private fun PerformanceOverlay(
+    stats: RenderPerformanceStats,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = buildString {
+            append("${stats.framesPerSecond} fps  ${format1(stats.frameTimeMs)}ms\n")
+            append("mesh ${format1(stats.lastChunkBuildMs)}ms")
+            if (stats.chunksRebuilt > 0) append(" ×${stats.chunksRebuilt}")
+            append("  cap ${format1(stats.lastCapBuildMs)}ms\n")
+            append("${stats.triangleCount / 1000}k tris  ${stats.cachedChunks} chunks  upload ${format1(stats.lastUploadMs)}ms")
+        },
+        color = Color(0xFFE0E6EC),
+        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier
+            .background(Color(0xB311161D), RoundedCornerShape(7.dp))
+            .padding(horizontal = 7.dp, vertical = 5.dp),
+    )
+}
+
+@Composable
 private fun MineWorldControls(
     state: MineWorldState,
     clipAxis: ClipAxis,
@@ -202,7 +239,7 @@ private fun MineWorldControls(
                 color = Color(0xFF20262D),
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
             )
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 7.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -280,7 +317,7 @@ private fun MineWorldControls(
                     )
                 }
                 Text(
-                    text = steeringDescription(state.steering),
+                    text = "${steeringDescription(state.steering)}  •  HEADING ${state.machineHeadingDegrees.roundToInt()}°",
                     color = Color.White,
                     style = MaterialTheme.typography.labelMedium,
                 )
@@ -289,26 +326,12 @@ private fun MineWorldControls(
                     onClick = onToggleDigging,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 7.dp),
+                        .padding(top = 6.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (state.isDigging) Color(0xFF8C3F3F) else Color(0xFFB7791F),
                     ),
                 ) {
                     Text(if (state.isDigging) "STOP" else "START DIGGING")
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
-                        Text("RESET VIEW")
-                    }
-                    OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
-                        Text("RESET MINE")
-                    }
                 }
             }
 
@@ -319,10 +342,42 @@ private fun MineWorldControls(
         }
 
         Text(
-            text = "Drag = rotate • pinch = zoom • X/Y/Z slices cut through solid rock like a CT scan. Once ore is hit, its connected vein becomes visible in slices.",
+            text = "ABSOLUTE ANGLE",
+            color = Color(0xFFB5BEC8),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            AnglePresetButton("UP 90", -90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+            AnglePresetButton("UP 45", -45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+            AnglePresetButton("LEVEL", 0f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+            AnglePresetButton("DOWN 45", 45f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+            AnglePresetButton("DOWN 90", 90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
+                Text("RESET VIEW")
+            }
+            OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
+                Text("RESET MINE")
+            }
+        }
+
+        Text(
+            text = "Drag = rotate • pinch = zoom • orange x-ray = digger through rock/slices • stopped steering previews and commits direction on START.",
             color = Color(0xFF8D98A5),
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 5.dp),
+            modifier = Modifier.padding(top = 4.dp),
         )
     }
 }
@@ -346,7 +401,7 @@ private fun VerticalAngleControl(
         Box(
             modifier = Modifier
                 .width(86.dp)
-                .height(116.dp),
+                .height(112.dp),
             contentAlignment = Alignment.Center,
         ) {
             Slider(
@@ -354,7 +409,7 @@ private fun VerticalAngleControl(
                 onValueChange = onValueChange,
                 valueRange = MineWorldController.MIN_VERTICAL_ANGLE_DEGREES..MineWorldController.MAX_VERTICAL_ANGLE_DEGREES,
                 modifier = Modifier
-                    .width(116.dp)
+                    .width(112.dp)
                     .rotate(90f),
             )
         }
@@ -365,6 +420,35 @@ private fun VerticalAngleControl(
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
         )
+    }
+}
+
+@Composable
+private fun AnglePresetButton(
+    label: String,
+    angle: Float,
+    current: Float,
+    onClick: (Float) -> Unit,
+    modifier: Modifier,
+) {
+    val selected = abs(current - angle) < 0.6f
+    if (selected) {
+        Button(
+            onClick = { onClick(angle) },
+            modifier = modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF356B75)),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
+    } else {
+        OutlinedButton(
+            onClick = { onClick(angle) },
+            modifier = modifier.height(34.dp),
+            contentPadding = PaddingValues(horizontal = 2.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
 
@@ -392,12 +476,12 @@ private fun AxisButton(
 
 private fun steeringDescription(value: Float): String = when {
     abs(value) < 0.05f -> "STRAIGHT"
-    value < 0f -> "TURN LEFT ${(abs(value) * 100f).roundToInt()}%"
-    else -> "TURN RIGHT ${(value * 100f).roundToInt()}%"
+    value < 0f -> "LEFT ${(abs(value) * 100f).roundToInt()}%"
+    else -> "RIGHT ${(value * 100f).roundToInt()}%"
 }
 
 private fun angleDescription(value: Float): String = when {
-    abs(value) < 2f -> "LEVEL"
+    abs(value) < 1f -> "LEVEL"
     value < 0f -> "${abs(value).roundToInt()}° UP"
     else -> "${value.roundToInt()}° DOWN"
 }
@@ -407,3 +491,5 @@ private fun clipValue(state: MineWorldState, axis: ClipAxis, fraction: Float): F
     ClipAxis.Y -> state.bounds.minY + (state.bounds.height * fraction)
     ClipAxis.Z -> state.bounds.minZ + (state.bounds.depth * fraction)
 }
+
+private fun format1(value: Float): String = "%.1f".format(value)

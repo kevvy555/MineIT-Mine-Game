@@ -1,134 +1,138 @@
-# 3D Geological World POC — 0.4.0
+# 3D Geological World POC — 0.5.0
 
 ## Purpose
 
-This POC advances the continuous 3D mine into the interaction model intended for the game: a solid geological volume that can be rotated, sliced and excavated while preserving discovery.
+0.5 keeps the solid geological/CT interaction proven by 0.4 and focuses on the next critical question: **can the custom 3D approach scale on ordinary mobile hardware while tunnel quality later increases?**
 
-The main design goal for 0.4 is to make the mine read as **solid rock**. The player should feel as though they are cutting through geology like a CT scan, not looking at a tunnel floating inside a transparent box.
+The Pixel-class phone is treated as a useful target rather than assuming performance problems are simply old hardware.
 
-## Architecture
+## Domain ownership
 
-### Domain
+`domain/` remains the canonical owner of:
 
-`domain/` owns the actual mine:
-
-- X/Y/Z coordinates;
-- chunk extent and world bounds;
+- X/Y/Z mine coordinates and world extent;
 - tunnel geometry;
-- ore-body geometry;
-- continuous excavation state;
+- ore-body geometry and discovery;
+- machine heading and vertical angle;
+- continuous excavation rules;
 - horizontal steering;
-- vertical excavation angle;
-- automatic extent expansion;
-- exposed-ore detection and connected-body discovery;
-- excavated volume;
-- waste-rock tonnage.
+- excavated volume and waste tonnage.
 
-No Android/OpenGL types are permitted in this layer.
+Renderer optimisation must not become gameplay truth.
 
-### Mesh generation
+### Steering preview
 
-The visual rock is generated from a scalar solid/air field. A point is solid only when it is inside the geological bounds and outside excavated tunnel volume.
+When stopped, the LEFT/RIGHT slider previews up to 90° either side of the committed heading. The machine mesh visibly rotates to this preview direction. Starting excavation commits the preview heading and recentres steering.
 
-The field is sampled on a grid and polygonised with marching tetrahedra. The grid remains an implementation detail; visible tunnels are smooth triangle surfaces rather than block voxels.
+Once moving, steering again represents turn rate so the tunnel curves rather than snapping between headings.
 
-### Solid CT slice caps
+### Absolute vertical angle
 
-OpenGL clipping alone creates a hollow-shell appearance because removed triangles leave an open volume. 0.4 adds a generated **cut cap** at the active X, Y or Z plane.
+The domain now supports the complete -90° to +90° range:
 
-The cap samples the same authoritative solid/air field:
+- -90° = vertically up;
+- -45° = 45° up;
+- 0° = level;
+- +45° = 45° down;
+- +90° = vertically down.
 
-- solid cells draw rock;
-- excavated tunnel cells remain open holes;
-- the surface edge can draw grass;
-- after discovery, cells inside the connected ore body draw mineralisation.
+The UI keeps the vertical slider and adds absolute presets. This makes a shaft-to-level sequence explicit: **DOWN 90**, then **LEVEL**.
 
-This gives the sliced block a physically solid cross-section.
+## Performance architecture
 
-### Ore discovery
+### Chunk-local rock meshes
 
-The ore body is a continuous tube-like field interpolated through 3D control nodes with varying radius.
+The 24 m geological chunks that previously existed mainly as world-expansion bookkeeping are now actual render cache units.
 
-Before first contact, the vein is hidden and cannot be revealed merely by moving a slice plane. Once any excavation intersects the connected ore body, that body becomes discovered. From then on, geological slice caps show the ore wherever the current X/Y/Z plane intersects the known connected vein.
+The renderer no longer regenerates one mesh for the complete geological extent whenever the tunnel changes. Each new tunnel segment calculates the small set of chunks its cutter radius can affect and only those chunks are marked dirty.
 
-This makes first contact a meaningful discovery event while allowing the player to inspect the deposit and plan how to mine it.
+When world expansion moves an exterior boundary, only newly created chunks and old boundary-face chunks are invalidated.
 
-### Surface and mining machine
+### Tunnel spatial index
 
-The initial mine is untouched solid rock with a grass-covered surface at Z=0. A simple 3D mining machine begins on that surface, aligned with the starting heading and down-angle.
+Each render chunk keeps a set of tunnel segments that can physically influence that chunk. Scalar-field sampling therefore tests a point against local tunnel geometry rather than every segment ever excavated.
 
-The machine is renderer geometry only. Its authoritative position and orientation come from domain tunnel/heading state.
+This is renderer acceleration data only; the authoritative tunnel remains the domain polyline.
 
-### Continuous digging
+### Active and refined quality
 
-The fixed `DIG +8m` command has been removed.
+During continuous digging, dirty chunks use a 2 m scalar-field sampling step to keep cutter updates responsive.
 
-The player now starts and stops excavation. While digging, the domain advances the machine on timed simulation ticks:
+When digging stops, chunks touched by that excavation run a 1.2 m refinement pass. This deliberately separates **interactive excavation cost** from **finished tunnel quality**, allowing later testing of still finer walls without multiplying the whole-world workload.
 
-- **Steer LEFT/RIGHT** controls turn rate around the horizontal plane;
-- **Angle UP/DOWN** controls vertical excavation angle;
-- the angle UI is intentionally vertical to match the physical meaning;
-- the machine cannot start level/upward from the surface;
-- upward excavation from underground stops when it exits back through the surface;
-- each movement segment expands the tunnel geometry and material accounting.
+### GPU buffers
 
-The X/Y/Z inspection slices remain independent of digging and can be moved while excavation continues.
+Each cached chunk is uploaded to an OpenGL vertex buffer object (VBO). Meshes remain on the GPU until that specific chunk is invalidated.
 
-## Renderer
+The CT cap and machine are separate VBOs. Shader attribute/uniform locations are cached rather than looked up every frame.
 
-Compose remains responsible for the Android UI. `GLSurfaceView` provides the 3D viewport.
+### CT cap invalidation
 
-OpenGL ES provides generic graphics work only:
+The solid CT cap is expensive enough to treat independently. It rebuilds when:
 
-- perspective camera;
-- orbit rotation and pinch zoom;
-- depth testing;
-- triangle rendering;
-- X/Y/Z clipping;
-- simple lighting.
+- the player changes axis, position, side or enables/disables slicing;
+- geological extent changes;
+- ore discovery changes the material shown on a cut;
+- a newly excavated segment reaches the current cut plane.
 
-Generated meshes currently include:
+Excavation elsewhere no longer forces the current CT section to regenerate.
 
-- geological/tunnel surface mesh;
-- CT cut-cap mesh;
-- simple mining-machine mesh.
+### Incremental ore contact
 
-The renderer has no authority over gameplay rules.
+Previously, every excavation tick rescanned the complete historic tunnel to calculate ore exposure. 0.5 tests only the newly added tunnel segment and merges any newly exposed ore segment IDs into existing discovery state.
 
-## World expansion
+The full scan remains available as a regression reference and is tested against the incremental result.
 
-The geological volume grows in 24 m chunks when excavation approaches an X, Y or Z boundary. The current model keeps a contiguous extent; this can later become sparse streamed chunks without changing the player-facing concept.
+## Performance HUD
 
-## Material accounting
+The 3D viewport displays a compact diagnostic overlay containing:
 
-Each new tunnel segment adds its swept cylindrical volume to the excavated total. Waste rock currently uses a provisional density of 2.7 tonnes/m³.
+- FPS;
+- effective frame time;
+- most recent chunk mesh-build time;
+- number of chunks rebuilt in that sample;
+- CT-cap build time;
+- triangle count;
+- cached chunk count;
+- GPU-buffer upload time.
 
-Overlap is still approximate. A later occupancy/material field will make removed-volume accounting authoritative and prevent double-counting previously excavated void.
+`GLSurfaceView` deliberately runs continuously in this POC so FPS can be measured on real devices. A later production pass can return to demand-driven rendering when static to reduce battery use.
 
-## Deliberate non-goals
+## Digger readability and x-ray locator
 
-0.4 still does not include:
+The old machine was too visually symmetrical to communicate direction. 0.5 gives it:
 
-- broken-rock piles or removal logistics;
-- loaders/trucks/conveyors;
-- shaft hoisting;
-- workers;
-- power;
-- ventilation;
-- multiple rock/mineral types;
-- survey uncertainty;
-- arbitrary machine/tunnel profiles;
-- stopes;
-- save/load;
-- sparse chunk streaming;
-- advanced lighting/textures.
+- a wide bright cutter at the front;
+- an elongated orange body;
+- a bright centre spine pointing at the face;
+- a dark rear block.
+
+The same mesh is rendered a second time at low alpha with depth testing and CT clipping disabled. This creates an always-visible x-ray silhouette without revealing hidden tunnels or ore.
+
+## Continuous digging cadence
+
+The simulation cadence moves from 250 ms to 100 ms. Chunk-local invalidation is intended to make the more responsive machine movement affordable while exposing actual device performance through the HUD.
 
 ## What to evaluate
 
-1. Does the generated cut face make the volume finally feel like solid rock?
-2. Does rotating while changing X/Y/Z slices feel like inspecting a geological CT scan?
-3. Is starting the machine at the grass surface spatially understandable?
-4. Are **LEFT/RIGHT** steering and the vertical **UP/DOWN** angle control intuitive without mining terminology?
-5. Does continuous start/stop digging feel better than discrete excavation steps?
-6. Is revealing the connected vein after first contact a satisfying and useful discovery mechanic?
-7. Does the custom OpenGL/mesh approach still perform well enough on the target phone as continuous excavation updates the geometry?
+1. Does FPS remain comfortable while continuously digging on a Pixel 7-class device?
+2. How large are the reported **mesh**, **cap**, and **upload** times during a straight shaft and during curved excavation?
+3. Does stopping cause a tolerable refinement cost, and is the resulting tunnel noticeably smoother?
+4. Does world expansion create an obvious hitch or remain local enough?
+5. Is the asymmetric/x-ray machine easy to locate and is its direction unmistakable?
+6. Does stopped steering preview make choosing a heading intuitive?
+7. Are **DOWN 90 → LEVEL** and the other absolute presets useful enough to keep?
+8. After this pass, is finer tunnel sampling realistic on the target phone, or should meshing move off the GL thread before quality is increased further?
+
+## Still deliberately excluded
+
+- broken-rock piles and haulage;
+- shaft hoisting;
+- workers;
+- power and ventilation;
+- multiple geology types;
+- exploration uncertainty;
+- arbitrary tunnel profiles and stopes;
+- save/load;
+- sparse disk-backed chunk streaming;
+- production lighting/textures.

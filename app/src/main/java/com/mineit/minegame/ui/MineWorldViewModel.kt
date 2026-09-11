@@ -56,7 +56,9 @@ class MineWorldViewModel : ViewModel() {
     }
 
     private companion object {
-        const val DIG_TICK_MILLIS = 250L
-        const val DIG_TICK_SECONDS = 0.25f
+        // Chunk-local remeshing makes a faster simulation cadence practical without rebuilding
+        // the whole geological volume each time the cutter advances.
+        const val DIG_TICK_MILLIS = 100L
+        const val DIG_TICK_SECONDS = 0.10f
     }
 }

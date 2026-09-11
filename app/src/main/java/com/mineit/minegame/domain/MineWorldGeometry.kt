@@ -13,11 +13,16 @@ object MineWorldGeometry {
         return sqrt((dx * dx) + (dy * dy) + (dz * dz))
     }
 
-    fun distanceToTunnel(point: MinePoint3D, tunnel: TunnelGeometry): Float {
-        if (tunnel.points.size < 2) return Float.POSITIVE_INFINITY
-        return tunnel.points.zipWithNext().minOf { (start, end) ->
-            distanceToSegment(point, start, end)
+    fun distanceToTunnel(point: MinePoint3D, tunnel: TunnelGeometry): Float =
+        distanceToTunnelSegments(point, tunnel.segments)
+
+    fun distanceToTunnelSegments(point: MinePoint3D, segments: Collection<TunnelSegment>): Float {
+        if (segments.isEmpty()) return Float.POSITIVE_INFINITY
+        var best = Float.POSITIVE_INFINITY
+        segments.forEach { segment ->
+            best = min(best, distanceToSegment(point, segment.start, segment.end))
         }
+        return best
     }
 
     fun oreMargin(point: MinePoint3D, oreBody: List<OreBodyNode>): Float {
@@ -36,6 +41,18 @@ object MineWorldGeometry {
         point: MinePoint3D,
         bounds: MineWorldBounds,
         tunnel: TunnelGeometry,
+    ): Float = solidMargin(
+        point = point,
+        bounds = bounds,
+        tunnelRadiusMetres = tunnel.radiusMetres,
+        segments = tunnel.segments,
+    )
+
+    fun solidMargin(
+        point: MinePoint3D,
+        bounds: MineWorldBounds,
+        tunnelRadiusMetres: Float,
+        segments: Collection<TunnelSegment>,
     ): Float {
         val insideBounds = minOf(
             point.x - bounds.minX,
@@ -45,14 +62,13 @@ object MineWorldGeometry {
             point.z - bounds.minZ,
             bounds.maxZ - point.z,
         )
-        val outsideTunnel = distanceToTunnel(point, tunnel) - tunnel.radiusMetres
+        val outsideTunnel = distanceToTunnelSegments(point, segments) - tunnelRadiusMetres
         return min(insideBounds, outsideTunnel)
     }
 
-    fun sweptVolume(tunnel: TunnelGeometry): Float = tunnel.points
-        .zipWithNext()
-        .sumOf { (start, end) ->
-            cylinderVolume(tunnel.radiusMetres, distance(start, end)).toDouble()
+    fun sweptVolume(tunnel: TunnelGeometry): Float = tunnel.segments
+        .sumOf { segment ->
+            cylinderVolume(tunnel.radiusMetres, distance(segment.start, segment.end)).toDouble()
         }
         .toFloat()
 
@@ -63,21 +79,40 @@ object MineWorldGeometry {
     ): Set<Int> {
         if (tunnel.points.size < 2 || oreBody.size < 2) return emptySet()
         val exposed = mutableSetOf<Int>()
+        tunnel.segments.forEach { segment ->
+            exposed += exposedOreSegmentsForSegment(
+                start = segment.start,
+                end = segment.end,
+                tunnelRadiusMetres = tunnel.radiusMetres,
+                oreBody = oreBody,
+                sampleSpacingMetres = sampleSpacingMetres,
+            )
+        }
+        return exposed
+    }
 
-        tunnel.points.zipWithNext().forEach { (start, end) ->
-            val length = distance(start, end)
-            val steps = max(1, ceil(length / sampleSpacingMetres).toInt())
-            for (step in 0..steps) {
-                val t = step.toFloat() / steps.toFloat()
-                val sample = interpolate(start, end, t)
-                oreBody.zipWithNext().forEachIndexed { index, (oreStart, oreEnd) ->
-                    val oreT = closestParameter(sample, oreStart.centre, oreEnd.centre)
-                    val closest = interpolate(oreStart.centre, oreEnd.centre, oreT)
-                    val oreRadius = oreStart.radiusMetres +
-                        ((oreEnd.radiusMetres - oreStart.radiusMetres) * oreT)
-                    if (distance(sample, closest) <= oreRadius + tunnel.radiusMetres) {
-                        exposed += index
-                    }
+    fun exposedOreSegmentsForSegment(
+        start: MinePoint3D,
+        end: MinePoint3D,
+        tunnelRadiusMetres: Float,
+        oreBody: List<OreBodyNode>,
+        sampleSpacingMetres: Float = 0.75f,
+    ): Set<Int> {
+        if (oreBody.size < 2) return emptySet()
+        val exposed = mutableSetOf<Int>()
+        val length = distance(start, end)
+        val steps = max(1, ceil(length / sampleSpacingMetres).toInt())
+
+        for (step in 0..steps) {
+            val t = step.toFloat() / steps.toFloat()
+            val sample = interpolate(start, end, t)
+            oreBody.zipWithNext().forEachIndexed { index, (oreStart, oreEnd) ->
+                val oreT = closestParameter(sample, oreStart.centre, oreEnd.centre)
+                val closest = interpolate(oreStart.centre, oreEnd.centre, oreT)
+                val oreRadius = oreStart.radiusMetres +
+                    ((oreEnd.radiusMetres - oreStart.radiusMetres) * oreT)
+                if (distance(sample, closest) <= oreRadius + tunnelRadiusMetres) {
+                    exposed += index
                 }
             }
         }
