@@ -8,8 +8,9 @@ object MineWorldController {
     const val ROCK_DENSITY_TONNES_PER_CUBIC_METRE = 2.7f
     const val DIG_SPEED_METRES_PER_SECOND = 3f
     const val TURN_RATE_DEGREES_PER_SECOND = 42f
-    const val MIN_VERTICAL_ANGLE_DEGREES = -70f
-    const val MAX_VERTICAL_ANGLE_DEGREES = 80f
+    const val STEERING_PREVIEW_DEGREES = 90f
+    const val MIN_VERTICAL_ANGLE_DEGREES = -90f
+    const val MAX_VERTICAL_ANGLE_DEGREES = 90f
     const val MIN_STEERING = -1f
     const val MAX_STEERING = 1f
 
@@ -36,7 +37,14 @@ object MineWorldController {
         ) {
             return state.copy(isDigging = false)
         }
-        return state.copy(isDigging = true)
+
+        // Steering while stopped is a direction preview. Commit that preview when excavation starts,
+        // then return the steering control to centre so it becomes a turn-rate input while moving.
+        return state.copy(
+            headingDegrees = state.machineHeadingDegrees,
+            steering = 0f,
+            isDigging = true,
+        )
     }
 
     fun stopDigging(state: MineWorldState): MineWorldState = state.copy(isDigging = false)
@@ -93,10 +101,13 @@ object MineWorldController {
         val extent = expandExtent(state.extent, target)
         val volume = state.excavatedVolumeCubicMetres +
             cylinderVolume(state.tunnel.radiusMetres, segmentLength)
-        val exposures = MineWorldGeometry.exposedOreSegments(
-            tunnel = tunnel,
+        val newlyExposed = MineWorldGeometry.exposedOreSegmentsForSegment(
+            start = start,
+            end = target,
+            tunnelRadiusMetres = state.tunnel.radiusMetres,
             oreBody = state.oreBody,
         )
+        val exposures = state.exposedOreSegments + newlyExposed
 
         return state.copy(
             tunnel = tunnel,
@@ -104,7 +115,7 @@ object MineWorldController {
             headingDegrees = heading,
             excavatedVolumeCubicMetres = volume,
             exposedOreSegments = exposures,
-            oreBodyDiscovered = state.oreBodyDiscovered || exposures.isNotEmpty(),
+            oreBodyDiscovered = state.oreBodyDiscovered || newlyExposed.isNotEmpty(),
             isDigging = state.isDigging && !exitsSurface,
         )
     }
@@ -134,10 +145,5 @@ object MineWorldController {
             maxChunkY = maxY,
             maxChunkZ = maxZ,
         )
-    }
-
-    private fun normalizeHeading(degrees: Float): Float {
-        val normalized = degrees % 360f
-        return if (normalized < 0f) normalized + 360f else normalized
     }
 }
