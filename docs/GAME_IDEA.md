@@ -1,350 +1,121 @@
-# MineIT Mine Game — Rough Game Idea
+# MineIT Mine Game — Current Game Direction
 
-## Status
+## Core idea
 
-Early concept / discovery document. This captures the current direction for the MineIT single-mine mini-game and is intentionally broader than the first playable slice.
+MineIT Mine Game is a single-mine management and development game set in the MineIT / Koplin universe.
 
-## Core concept
+The mine is no longer conceived as a side-on 2D world or a stack of independent 2D levels. The canonical mine model is now a **continuous 3D geological volume**.
 
-MineIT Mine Game focuses on operating **one mine** inside the MineIT / Koplin universe rather than managing an entire settlement.
+The player gradually reveals and reshapes that volume by physically excavating shafts, drifts, ramps and later stopes. The mine itself becomes the game board.
 
-The player controls a living mine site presented as a side-on cross-section:
+## 3D geology as the source of truth
 
-- **above ground** is the mine support and logistics area;
-- **below ground** is the main playable mine, where the player digs, explores, installs equipment and expands deeper;
-- the world can scroll horizontally across the surface and mine workings and vertically down as the mine grows;
-- the deeper the player goes, the geology, ore veins, logistics and hazards become more demanding and potentially more rewarding.
+The underground world uses real X/Y/Z coordinates. Rock, ore bodies and excavation all occupy continuous 3D space.
 
-The wider settlement supplies the mine with inputs such as workers and electrical power. The mine turns those inputs into valuable ore plus unwanted waste rock. Later versions can add spare parts, machinery, consumables, water, gas, processed ore and other MineIT Universe resources.
+The important consequences are:
 
-The important design principle is that these numbers are consequences of a mine the player physically operates. The game should not be primarily a set of production sliders.
+- ore veins can dip, curve, branch, narrow and widen through all three axes;
+- shafts and tunnels can be driven in arbitrary directions instead of snapping to square tiles;
+- tunnel diameter and shape can vary by machine or excavation method;
+- mined-out space is actual empty volume;
+- the amount and composition of removed material can be derived from the same geometry that the player sees;
+- mine infrastructure can later use the same world coordinates for haulage, ventilation, workers and machinery.
 
-## MineIT Universe placement
+The visible rock volume expands as the player develops beyond its current limits. Internally the world is chunked so the game does not need to hold an unlimited mine in one monolithic mesh.
 
-The natural setting is the **Deep Reach / Year 5326 charter era**.
+## Discovery
 
-The player can be the superintendent or operations director of a single extraction site belonging to, contracted by or supplying a Deep Reach mining settlement. The surrounding colony exists but is outside the player's direct control.
+Intact rock hides its geology. Rotating or slicing the mine must not magically reveal unknown ore.
 
-This supports the scenario cleanly:
+Ore becomes known through actions that genuinely expose or investigate it, for example:
 
-- Deep Reach or the settlement can allocate workforce and power to the mine;
-- extracted material can feed the larger Deep Reach contract economy;
-- existing MineIT Universe machine and substance definitions can be reused as the game develops;
-- the game can remain much smaller in scope than the full MineIT colony game while still being canonically connected to it.
+- a tunnel wall intersects an ore body;
+- shaft sinking exposes mineralisation;
+- exploration drilling samples material ahead of the workings;
+- later survey technology may provide uncertain/inferred geological information.
 
-Relevant established MineIT concepts include simple pit mines, deep mines, drill machines, conveyors, mine ventilation, crushers, structural/conductive/magnetic/rare ores, civilian workforce expectations, automation restrictions and industrial hazards.
+Confirmed exposed ore and inferred continuation should remain visually distinct.
 
-## Player fantasy
+The player should be able to rotate the geological volume freely and move cutting planes through X, Y and Z to inspect known mine geometry from any useful angle.
 
-The player should feel like they are **running and physically developing a mine**.
+## Excavation and material conservation
 
-At the end of a session, the mine itself should show the history of the player's decisions: shafts, bends, branching tunnels, lifts, extraction faces, conveyors, supports, equipment and exhausted or active veins.
+Rock does not disappear when mined.
 
-The central questions are intended to become:
+Every excavation removes a real volume. That volume produces material based on rock density and composition. Early gameplay can treat ordinary material as waste rock; later the same event can split removed material into ore, waste and other substances.
 
-- Where should I dig next?
-- Is it worth going deeper?
-- Should I follow this mediocre vein or drive toward a richer target?
-- Can workers reach the active face quickly enough?
-- Can the shaft/lift/conveyor system move the material being produced?
-- Is there enough power for the machinery I have installed?
-- Is the mine safe enough to keep pushing production?
-- How do I deal with all the waste rock created while reaching useful ore?
+This creates the eventual logistics chain:
 
-## World presentation
+1. excavation creates broken material;
+2. material accumulates at the face;
+3. loaders, conveyors or haulage move it through the mine;
+4. shafts/ramps move material toward the surface;
+5. ore and waste are separated into their appropriate surface flows.
 
-### Surface
+The geometry and the material accounting should never become separate contradictory systems.
 
-The top of the world shows blue sky and a ground line. The surface can eventually scroll left and right and contain functional mine buildings rather than decorative scenery.
+## Rendering direction
 
-Candidate surface facilities:
+The mine simulation must not depend on one renderer.
 
-- worker entrance / gatehouse;
-- main shaft head and lift tower;
-- electrical intake / substation;
-- workshop / maintenance bay;
-- ore handling building;
-- crusher / sorter;
-- ore stockpile;
-- waste / spoil heap;
-- storage yard;
-- dispatch / loading area;
-- office / mine control room.
+The domain owns:
 
-Workers arrive and leave through the entrance. Ore and waste emerge from the underground workings and visibly enter the surface logistics chain.
+- chunk extents;
+- geological fields;
+- ore bodies;
+- excavation paths/volumes;
+- known/unknown geology;
+- removed material quantities;
+- mine connectivity when that system is introduced.
 
-Surface upgrades should eventually affect underground operation: lift throughput, repair speed, power availability, storage capacity and material handling.
+The renderer consumes that data and builds disposable visual meshes.
 
-### Underground
+The 0.3 POC deliberately uses a lightweight custom OpenGL ES renderer rather than adopting a full game engine immediately. This tests whether MineIT can keep its native Compose management UI while using a purpose-built 3D mine renderer.
 
-Below the surface is grey rock. The player creates the mine by digging into it.
+If a different renderer is adopted later, the mine model should not need to be rewritten.
 
-The underground world can eventually contain:
+## Interaction model
 
-- main shafts;
-- lift stops at different levels;
-- access tunnels and galleries;
-- active mining faces;
-- ore veins and pockets;
-- waste rock;
-- hard or slow-to-cut rock;
-- unstable ground;
-- water pockets;
-- gas pockets;
-- support systems;
-- power cables;
-- conveyors;
-- ventilation ducts;
-- pumps;
-- machinery and crews.
+The intended inspection interaction is:
 
-The underground world should continue downward as the player's technology and mine development permit.
+- one-finger drag rotates the mine freely;
+- pinch zooms in/out;
+- X/Y/Z cutting planes move through the rock volume;
+- cutting direction can be reversed;
+- the full uncut geological volume can be restored instantly;
+- future tools may add arbitrary-angle section planes and focus/isolate controls.
 
-## Digging and exploration
+Excavation is separate from camera manipulation. The player chooses an excavation heading/dip and advances a mining face through actual rock.
 
-Digging is a primary player action, not an automatic background number.
+## Long-term mining gameplay
 
-The player chooses where to advance the mine and uses machinery to excavate rock. New underground space reveals geology and enables new routes.
+The current 3D foundation should eventually support multiple real mining methods rather than forcing every deposit into one pattern.
 
-Longer-term, excavation can reveal:
+Examples include:
 
-- low-grade ore;
-- high-grade ore;
-- unusually rich pockets;
-- rare ore;
-- hard rock;
-- unstable rock;
-- water;
-- gas;
-- geological obstacles;
-- mostly worthless waste rock.
+- shaft sinking and horizontal development;
+- narrow-vein mining;
+- cut-and-fill;
+- long-hole/open stoping;
+- room-and-pillar where geology suits it;
+- large-scale late-game methods such as block caving.
 
-This makes mine expansion both a construction problem and an exploration problem.
+The correct method should depend on ore-body geometry, grade, depth, ground conditions and economics.
 
-## Depth progression
+## Immediate POC goal
 
-Depth should have real gameplay effects rather than only changing the background position.
+Version 0.3 is not trying to be the finished game. It is proving the underlying world concept.
 
-### Shallow mine
+Success means we can:
 
-- easier excavation;
-- simpler equipment;
-- common or lower-value deposits;
-- short worker travel time;
-- low logistical pressure;
-- lower hazard level.
+1. represent an expandable 3D rock volume;
+2. rotate it from any useful angle;
+3. slice it in X/Y/Z;
+4. carve smooth arbitrary tunnels rather than square blocks;
+5. embed a curved 3D ore body;
+6. reveal ore only where excavation exposes it;
+7. extend a tunnel through all three axes;
+8. expand the geological world as excavation reaches an edge;
+9. derive excavated volume and waste-rock tonnage from the mine geometry.
 
-### Mid-depth mine
-
-- better/richer veins become possible;
-- harder rock;
-- more machinery;
-- lift capacity matters;
-- ventilation and supports matter more;
-- longer worker travel times;
-- material transport can bottleneck.
-
-### Deep mine
-
-- rare/high-value deposits;
-- difficult rock;
-- higher heat/pressure and other hazards;
-- demanding ventilation/pumping/support;
-- high power demand;
-- major shaft and lift logistics;
-- greater consequences for breakdowns and poor planning.
-
-## Workers
-
-Workers should eventually be visible as crews rather than simulated as hundreds of individual characters.
-
-The mine receives a workforce allocation from the wider settlement. Crews can be assigned to activities such as:
-
-- digging;
-- ore extraction;
-- machine operation;
-- lift operation;
-- maintenance;
-- support installation;
-- ventilation work;
-- emergency response.
-
-Workers enter through the surface entrance, travel to the shaft/lift and descend to the appropriate level. Excessive travel time should eventually reduce productive time, giving the player a reason to improve shafts, lifts and access routes.
-
-## Power
-
-The wider settlement supplies a limited electrical allocation to the mine.
-
-Mine equipment consumes power. Candidate consumers include:
-
-- tunnel boring/digging machine;
-- ore drill;
-- conveyors;
-- lifts;
-- ventilation;
-- pumps;
-- crushers;
-- lighting/control infrastructure.
-
-The player should eventually make operational decisions about which systems run when supply is constrained.
-
-## Material flow
-
-Mining produces both useful ore and unwanted material.
-
-A useful long-term model is deposit grade. For example, a face at 32% grade means 100 tonnes of mined rock may yield roughly 32 tonnes of target ore and 68 tonnes of waste material before later processing rules.
-
-Waste should not simply disappear. It needs to be moved out of the working face and eventually stored, dumped or reused. This can make poor-grade ore expensive because it consumes excavation, haulage and waste capacity for relatively little useful output.
-
-## Machinery
-
-Candidate machine progression includes:
-
-- shaft/tunnel digger;
-- ore drill / mining rig;
-- lift;
-- conveyor;
-- support equipment;
-- ventilation equipment;
-- pumps;
-- underground haulage vehicles later;
-- crushers/sorters on the surface;
-- more automated equipment later.
-
-Automation should eventually follow the MineIT setting: fewer workers can be traded for more sophisticated equipment, clean power, calibration and harder-to-maintain specialised components. It should be a trade-off rather than a universal upgrade.
-
-## Hazards and pressure
-
-Future mine hazards can draw directly from established MineIT lore:
-
-- collapse / ground failure;
-- gas release;
-- dust explosion;
-- equipment collision;
-- toxic exposure;
-- fire;
-- electrical failure;
-- flooding / water ingress;
-- machinery breakdown.
-
-The player should often be able to push production harder by reducing maintenance or delaying safety work, but risk accumulates rather than causing an immediate guaranteed punishment.
-
-## Surface/underground logistics
-
-The mine should eventually operate as a visible chain:
-
-1. workers enter the site;
-2. workers and machinery travel underground;
-3. the player opens new workings;
-4. ore/waste is extracted at active faces;
-5. material travels through underground haulage/conveyors;
-6. lifts or conveyors bring it to the surface;
-7. ore enters handling/storage/processing;
-8. waste goes to spoil handling;
-9. workers return to the surface at shift end.
-
-Bottlenecks should be visible in the world, not represented only by warnings or percentages.
-
-## Longer-term game loop
-
-A possible mature loop is:
-
-1. receive workforce, power and production requirements from the settlement / Deep Reach;
-2. inspect the current mine and known geological information;
-3. choose where to dig or expand;
-4. install/move equipment and infrastructure;
-5. assign crews;
-6. run the operation;
-7. watch ore and waste move through the mine;
-8. react to bottlenecks, breakdowns and hazards;
-9. complete production targets and improve the mine;
-10. dig deeper and discover more valuable deposits.
-
-## Candidate contract structure
-
-A later game layer could use fixed operating periods, such as a 30-day mine production contract.
-
-Performance could be rated on:
-
-- ore delivered;
-- ore grade/quality;
-- safety;
-- power efficiency;
-- waste compliance;
-- equipment condition;
-- contract bonus/profit.
-
-The wider settlement can occasionally change the mine's inputs — for example, a temporary power restriction or workforce reassignment — forcing the player to reconfigure the operation instead of permanently scaling every system upward.
-
-## First playable slice — Digging prototype
-
-The first slice deliberately ignores almost all of the systems above. Its purpose is to answer one question:
-
-> **Is physically steering a digging machine through the ground satisfying on a phone?**
-
-### Visuals
-
-- native Android app;
-- portrait-first mobile presentation;
-- blue sky above the ground;
-- grey rock below the ground;
-- a simple rectangle representing the digger;
-- the excavated shaft/tunnel remains visible behind the digger.
-
-### Starting state
-
-- digger starts at the surface;
-- it is initially pointed straight down;
-- the intended first job is to dig a shaft;
-- the camera follows the digger as it descends so depth is effectively unbounded for the prototype.
-
-### Player controls
-
-- set the digger's angle;
-- **Start Digging**;
-- **Stop**;
-- adjust the angle while the machine is moving;
-- see current angle and depth.
-
-### Digging behaviour
-
-- while stopped, the digger does not move;
-- while digging, it advances continuously in the direction it is pointing;
-- changes to the requested angle steer the machine progressively through the rock;
-- the digger leaves an excavated tunnel/shaft behind it;
-- no resources, workers, machinery logistics, hazards or economy are simulated yet.
-
-### First-slice success criteria
-
-The slice is successful if:
-
-1. steering feels understandable and responsive on a phone;
-2. starting/stopping feels immediate;
-3. the tunnel clearly reflects the player's path;
-4. descending and changing direction is visually satisfying;
-5. the code leaves room for geology, ore, machinery and mine infrastructure without putting those systems into this prototype.
-
-## Explicit non-goals for the first slice
-
-Do not implement yet:
-
-- ore veins;
-- ore/waste production;
-- workers;
-- lifts;
-- conveyors;
-- surface buildings beyond the visual surface itself;
-- power simulation;
-- hazards;
-- maintenance;
-- contract economy;
-- multiple machines;
-- research/upgrades;
-- saving/loading;
-- MineIT Universe data integration.
-
-These belong after the digging mechanic itself proves enjoyable.
-
-## Current one-sentence definition
-
-**A side-on MineIT mining game where the player develops one continuous surface-and-underground mine, physically digs shafts and tunnels deeper into the world, discovers increasingly valuable geology, and builds the worker, machine and material-transport infrastructure needed to operate it safely and efficiently.**
+Once this works convincingly, the next major layer is physical material handling: broken rock at the face, haulage and surface disposal.

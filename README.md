@@ -1,30 +1,44 @@
 # MineIT Mine Game
 
-A MineIT-universe Android mining game experiment focused on making a complex underground mine readable and playable on a phone.
+Native Android mining-game prototype in the MineIT universe.
 
-## Current POC — Mine Prism 0.2.0
+## Current prototype — 0.3.0
 
-The previous steerable-digger prototype has been superseded. Version `0.2.0` tests the **Mine Prism** interaction model:
+The game has moved from the 2D/2.5D Mine Prism experiment to a genuine **3D geological volume**.
 
-- the mine exists as a 3-axis model (`x`, `y`, depth);
-- an isometric geological prism presents the whole mine without requiring a free-flying 3D camera;
-- a depth slider peels rock away to reveal deeper workings;
-- one ore body visibly continues through multiple depths;
-- working levels become visible when the depth slice reaches them;
-- **Explode Levels** separates levels vertically while preserving their relationship to the shaft;
-- tapping a revealed level unfolds it into a readable top-down operational view;
-- pinch zoom and drag pan work in both views.
+The current POC is deliberately testing the technical/gameplay foundation rather than a full economy:
 
-This is a presentation/interaction POC, not yet a mining simulation. There is deliberately no production, waste, workforce, power, equipment economy or save game in this build.
+- the mine exists as true X/Y/Z data;
+- a continuous rock volume is converted into smooth triangle geometry;
+- the player can freely rotate the mine and pinch to zoom;
+- X, Y and Z cutting planes can be moved through the rock to inspect the interior;
+- the cut direction can be flipped or disabled to show the full volume;
+- the starting shaft and every new excavation are represented as real 3D tunnel volumes rather than square tiles;
+- tunnel diameter is continuous and tunnel turns form rounded joins;
+- a curved 3D ore body exists inside the geology;
+- ore is only coloured where an excavated tunnel wall actually exposes it;
+- the player can steer excavation with azimuth and dip and dig another 8 m segment;
+- the geological volume expands in 24 m chunks as excavation approaches an edge;
+- excavated cubic metres and resulting waste-rock tonnes are tracked.
+
+The renderer is intentionally lightweight: Jetpack Compose owns the mobile UI and an embedded OpenGL ES renderer draws the 3D mine. The geological world and excavation rules remain renderer-independent domain data.
+
+## Controls
+
+- Drag the 3D view to rotate it.
+- Pinch to zoom.
+- Select X, Y or Z and move the slice slider to cut through the geological volume.
+- Use **CUT + / CUT -** to choose which side of the plane is removed.
+- Use **CUT ON / FULL** to switch between a sliced view and the complete rock volume.
+- Set tunnel **Azimuth** and **Dip**, then press **DIG +8m**.
+- **VIEW** resets the camera; **RESET** resets the mine.
+
+Purple material is ore that the current excavation has physically exposed. Intact hidden ore is not revealed by the inspection view.
 
 ## Architecture
 
-- `domain/` owns the mine's immutable 3D geometry and Prism state transitions.
-- `ui/` owns Compose rendering, projection, hit-testing and transient camera pan/zoom.
-- UI renders domain state and dispatches intent; it is not the source of truth for mine geometry.
+- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, excavation and material accounting.
+- `ui/` — Compose controls and Android lifecycle/view state.
+- `ui/render/` — OpenGL ES camera, clipping and generated triangle mesh.
 
-See [`docs/MINE_PRISM_POC.md`](docs/MINE_PRISM_POC.md) for the current concept and evaluation goals, and [`docs/GAME_IDEA.md`](docs/GAME_IDEA.md) for the broader game discovery.
-
-## CI / APK
-
-GitHub Actions runs domain tests, builds a debug APK and verifies the persistent development signer before publishing the `mineit-mine-game-debug` artifact.
+See `docs/THREE_D_WORLD_POC.md` for the current design direction.
