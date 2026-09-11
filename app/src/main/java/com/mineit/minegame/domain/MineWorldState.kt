@@ -77,6 +77,7 @@ data class MineWorldState(
     val headingDegrees: Float = 25f,
     val verticalAngleDegrees: Float = 55f,
     val steering: Float = 0f,
+    val digSpeedMultiplier: Float = 1f,
     val isDigging: Boolean = false,
     val excavatedVolumeCubicMetres: Float = 0f,
     val exposedOreSegments: Set<Int> = emptySet(),

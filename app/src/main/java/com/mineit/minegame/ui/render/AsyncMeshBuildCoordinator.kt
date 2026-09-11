@@ -5,6 +5,7 @@ import com.mineit.minegame.domain.TunnelSegment
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class ChunkBuildRequest(
     val pipelineGeneration: Long,
@@ -45,25 +46,31 @@ internal data class CapBuildResult(
 )
 
 /**
- * CPU-only mesh work is deliberately kept off the GLSurfaceView render thread. OpenGL uploads
- * remain on the GL thread, but expensive scalar-field sampling/polygonisation can no longer stall
- * camera movement or the x-ray machine every time excavation advances.
+ * CPU-only mesh work stays off the GLSurfaceView render thread. Two low-priority chunk workers are
+ * enough to keep the active face responsive without turning meshing into an unbounded CPU/battery
+ * load. The CT cap remains isolated on its own worker so slice interaction cannot sit behind rock
+ * refinement work.
  */
 internal class AsyncMeshBuildCoordinator {
-    private val chunkExecutor = Executors.newSingleThreadExecutor { runnable ->
+    private val chunkExecutor = Executors.newFixedThreadPool(CHUNK_WORKER_COUNT) { runnable ->
         Thread(runnable, "mineit-chunk-mesher").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
     private val capExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "mineit-cap-mesher").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
 
-    private val chunkInFlight = AtomicBoolean(false)
+    private val chunkInFlight = AtomicInteger(0)
     private val capInFlight = AtomicBoolean(false)
     private val completedChunks = ConcurrentLinkedQueue<ChunkBuildResult>()
     private val completedCaps = ConcurrentLinkedQueue<CapBuildResult>()
 
     fun trySubmitChunk(request: ChunkBuildRequest): Boolean {
-        if (!chunkInFlight.compareAndSet(false, true)) return false
+        while (true) {
+            val current = chunkInFlight.get()
+            if (current >= CHUNK_WORKER_COUNT) return false
+            if (chunkInFlight.compareAndSet(current, current + 1)) break
+        }
+
         chunkExecutor.execute {
             try {
                 val start = System.nanoTime()
@@ -84,7 +91,7 @@ internal class AsyncMeshBuildCoordinator {
                     ),
                 )
             } finally {
-                chunkInFlight.set(false)
+                chunkInFlight.decrementAndGet()
             }
         }
         return true
@@ -124,9 +131,15 @@ internal class AsyncMeshBuildCoordinator {
 
     fun pollCap(): CapBuildResult? = completedCaps.poll()
 
-    fun isChunkBusy(): Boolean = chunkInFlight.get()
+    fun isChunkBusy(): Boolean = chunkInFlight.get() > 0
+
+    fun availableChunkSlots(): Int = (CHUNK_WORKER_COUNT - chunkInFlight.get()).coerceAtLeast(0)
 
     fun isCapBusy(): Boolean = capInFlight.get()
 
     private fun nanosToMs(nanos: Long): Float = nanos / 1_000_000f
+
+    private companion object {
+        const val CHUNK_WORKER_COUNT = 2
+    }
 }

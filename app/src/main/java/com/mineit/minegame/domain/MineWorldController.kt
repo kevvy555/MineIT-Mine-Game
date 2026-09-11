@@ -13,6 +13,8 @@ object MineWorldController {
     const val MAX_VERTICAL_ANGLE_DEGREES = 90f
     const val MIN_STEERING = -1f
     const val MAX_STEERING = 1f
+    const val MIN_DIG_SPEED_MULTIPLIER = 0.25f
+    const val MAX_DIG_SPEED_MULTIPLIER = 2f
 
     private const val EXTENT_MARGIN_METRES = 6f
     private const val MAX_TICK_SECONDS = 0.35f
@@ -27,6 +29,14 @@ object MineWorldController {
             verticalAngleDegrees = degrees.coerceIn(
                 MIN_VERTICAL_ANGLE_DEGREES,
                 MAX_VERTICAL_ANGLE_DEGREES,
+            ),
+        )
+
+    fun setDigSpeedMultiplier(state: MineWorldState, multiplier: Float): MineWorldState =
+        state.copy(
+            digSpeedMultiplier = multiplier.coerceIn(
+                MIN_DIG_SPEED_MULTIPLIER,
+                MAX_DIG_SPEED_MULTIPLIER,
             ),
         )
 
@@ -68,7 +78,7 @@ object MineWorldController {
         )
         val headingRadians = Math.toRadians(heading.toDouble())
         val verticalRadians = Math.toRadians(state.verticalAngleDegrees.toDouble())
-        val travel = DIG_SPEED_METRES_PER_SECOND * boundedDelta
+        val travel = DIG_SPEED_METRES_PER_SECOND * state.digSpeedMultiplier * boundedDelta
         val horizontalTravel = cos(verticalRadians).toFloat() * travel
         val start = state.tunnel.end
         val verticalTravel = sin(verticalRadians).toFloat() * travel

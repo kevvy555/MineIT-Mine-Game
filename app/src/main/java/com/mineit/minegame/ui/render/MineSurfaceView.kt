@@ -51,6 +51,10 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         mineRenderer.setCameraMode(mode)
     }
 
+    fun setRockVisible(visible: Boolean) {
+        mineRenderer.setRockVisible(visible)
+    }
+
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
         performanceListener = listener
     }

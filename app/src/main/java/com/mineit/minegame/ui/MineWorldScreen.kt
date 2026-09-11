@@ -66,6 +66,7 @@ fun MineWorldScreen(
     var sliceFractions by remember { mutableStateOf(SliceFractions(0.18f, 0.18f, 0.18f)) }
     var clipFlipped by remember { mutableStateOf(false) }
     var clipEnabled by remember { mutableStateOf(true) }
+    var rockVisible by remember { mutableStateOf(true) }
     var followDigger by remember { mutableStateOf(false) }
     var cameraMode by remember { mutableStateOf(CameraMode.ORBIT) }
     var showDiagnostics by remember { mutableStateOf(true) }
@@ -122,6 +123,7 @@ fun MineWorldScreen(
                         surfaceView = view
                         view.setWorldState(state)
                         view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                        view.setRockVisible(rockVisible)
                         view.setFollowDigger(followDigger)
                         view.setCameraMode(cameraMode)
                     }
@@ -129,6 +131,7 @@ fun MineWorldScreen(
                 update = { view ->
                     view.setWorldState(state)
                     view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                    view.setRockVisible(rockVisible)
                     view.setFollowDigger(followDigger)
                     view.setCameraMode(cameraMode)
                 },
@@ -153,6 +156,7 @@ fun MineWorldScreen(
             clipFraction = clipFraction,
             clipFlipped = clipFlipped,
             clipEnabled = clipEnabled,
+            rockVisible = rockVisible,
             followDigger = followDigger,
             cameraMode = cameraMode,
             showDiagnostics = showDiagnostics,
@@ -167,11 +171,13 @@ fun MineWorldScreen(
             },
             onFlipClip = { clipFlipped = !clipFlipped },
             onToggleClip = { clipEnabled = !clipEnabled },
+            onToggleRock = { rockVisible = !rockVisible },
             onToggleFollow = { followDigger = !followDigger },
             onCameraModeChange = { cameraMode = it },
             onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
             onSteeringChange = viewModel::setSteering,
             onVerticalAngleChange = viewModel::setVerticalAngle,
+            onDigSpeedChange = viewModel::setDigSpeedMultiplier,
             onTurnHeadingBy = viewModel::turnHeadingBy,
             onToggleDigging = viewModel::toggleDigging,
             onResetView = { surfaceView?.resetCamera() },
@@ -194,13 +200,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.7.0",
+                    text = "MINEIT // 3D GEOLOGY 0.8.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "PROGRESSIVE MESH + DIGGER POV",
+                    text = "FAST MESH + TUNNEL VIEW",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -275,6 +281,7 @@ private fun MineWorldControls(
     clipFraction: Float,
     clipFlipped: Boolean,
     clipEnabled: Boolean,
+    rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
     showDiagnostics: Boolean,
@@ -283,11 +290,13 @@ private fun MineWorldControls(
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
+    onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
     onToggleDiagnostics: () -> Unit,
     onSteeringChange: (Float) -> Unit,
     onVerticalAngleChange: (Float) -> Unit,
+    onDigSpeedChange: (Float) -> Unit,
     onTurnHeadingBy: (Float) -> Unit,
     onToggleDigging: () -> Unit,
     onResetView: () -> Unit,
@@ -307,6 +316,7 @@ private fun MineWorldControls(
                 state = state,
                 onSteeringChange = onSteeringChange,
                 onVerticalAngleChange = onVerticalAngleChange,
+                onDigSpeedChange = onDigSpeedChange,
                 onTurnHeadingBy = onTurnHeadingBy,
                 onToggleDigging = onToggleDigging,
             )
@@ -317,12 +327,14 @@ private fun MineWorldControls(
                 clipFraction = clipFraction,
                 clipFlipped = clipFlipped,
                 clipEnabled = clipEnabled,
+                rockVisible = rockVisible,
                 followDigger = followDigger,
                 cameraMode = cameraMode,
                 onClipAxisChange = onClipAxisChange,
                 onClipFractionChange = onClipFractionChange,
                 onFlipClip = onFlipClip,
                 onToggleClip = onToggleClip,
+                onToggleRock = onToggleRock,
                 onToggleFollow = onToggleFollow,
                 onCameraModeChange = onCameraModeChange,
                 onResetView = onResetView,
@@ -359,6 +371,7 @@ private fun ControlPanelContent(
     state: MineWorldState,
     onSteeringChange: (Float) -> Unit,
     onVerticalAngleChange: (Float) -> Unit,
+    onDigSpeedChange: (Float) -> Unit,
     onTurnHeadingBy: (Float) -> Unit,
     onToggleDigging: () -> Unit,
 ) {
@@ -445,11 +458,32 @@ private fun ControlPanelContent(
         AnglePresetButton("DOWN 90", 90f, state.verticalAngleDegrees, onVerticalAngleChange, Modifier.weight(1f))
     }
 
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "SPEED ${format1(state.digSpeedMultiplier)}×",
+            color = Color(0xFFB5BEC8),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(78.dp),
+        )
+        Slider(
+            value = state.digSpeedMultiplier,
+            onValueChange = onDigSpeedChange,
+            valueRange = MineWorldController.MIN_DIG_SPEED_MULTIPLIER..MineWorldController.MAX_DIG_SPEED_MULTIPLIER,
+            modifier = Modifier.weight(1f),
+        )
+    }
+
     Button(
         onClick = onToggleDigging,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp),
+            .padding(top = 3.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = if (state.isDigging) Color(0xFF8C3F3F) else Color(0xFFB7791F),
         ),
@@ -465,12 +499,14 @@ private fun ViewPanelContent(
     clipFraction: Float,
     clipFlipped: Boolean,
     clipEnabled: Boolean,
+    rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
     onClipAxisChange: (ClipAxis) -> Unit,
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
+    onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
     onResetView: () -> Unit,
@@ -479,57 +515,73 @@ private fun ViewPanelContent(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        ClipAxis.entries.forEach { axis ->
-            AxisButton(
-                axis = axis,
-                selected = clipAxis == axis,
-                onClick = { onClipAxisChange(axis) },
-                modifier = Modifier.weight(1f),
-            )
-        }
         ToggleButton(
-            selected = clipEnabled,
-            selectedText = "SLICE ON",
-            unselectedText = "FULL",
-            onClick = onToggleClip,
-            modifier = Modifier.weight(1.25f),
-        )
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "${clipAxis.name} slice ${clipValue(state, clipAxis, clipFraction).roundToInt()}m",
-            color = Color(0xFFB5BEC8),
-            style = MaterialTheme.typography.labelMedium,
+            selected = rockVisible,
+            selectedText = "ROCK ON",
+            unselectedText = "ROCK OFF",
+            onClick = onToggleRock,
             modifier = Modifier.weight(1f),
         )
-        OutlinedButton(onClick = onFlipClip) {
-            Text(if (clipFlipped) "FIRST SIDE" else "OTHER SIDE")
-        }
-    }
-    Slider(
-        value = clipFraction,
-        onValueChange = onClipFractionChange,
-        valueRange = 0.02f..0.98f,
-    )
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
-    ) {
         ToggleButton(
             selected = followDigger,
-            selectedText = "FOLLOW + SLICES ON",
-            unselectedText = "FOLLOW + SLICES OFF",
+            selectedText = "FOLLOW ON",
+            unselectedText = "FOLLOW OFF",
             onClick = onToggleFollow,
-            modifier = Modifier.weight(1.4f),
+            modifier = Modifier.weight(1f),
         )
         OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
-            Text("RESET VIEW")
+            Text("RESET")
         }
+    }
+
+    if (rockVisible) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            ClipAxis.entries.forEach { axis ->
+                AxisButton(
+                    axis = axis,
+                    selected = clipAxis == axis,
+                    onClick = { onClipAxisChange(axis) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            ToggleButton(
+                selected = clipEnabled,
+                selectedText = "SLICE ON",
+                unselectedText = "FULL",
+                onClick = onToggleClip,
+                modifier = Modifier.weight(1.25f),
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "${clipAxis.name} slice ${clipValue(state, clipAxis, clipFraction).roundToInt()}m",
+                color = Color(0xFFB5BEC8),
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.weight(1f),
+            )
+            OutlinedButton(onClick = onFlipClip) {
+                Text(if (clipFlipped) "FIRST SIDE" else "OTHER SIDE")
+            }
+        }
+        Slider(
+            value = clipFraction,
+            onValueChange = onClipFractionChange,
+            valueRange = 0.02f..0.98f,
+        )
+    } else {
+        Text(
+            text = "TUNNELS ONLY • grass remains visible as the surface reference",
+            color = Color(0xFF80CBC4),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(vertical = 7.dp),
+        )
     }
 
     Text(
@@ -537,7 +589,7 @@ private fun ViewPanelContent(
         color = Color(0xFFB5BEC8),
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(top = 5.dp),
+        modifier = Modifier.padding(top = 3.dp),
     )
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -558,12 +610,11 @@ private fun ViewPanelContent(
     }
 
     Text(
-        text = if (cameraMode == CameraMode.DIGGER_POV) {
-            "Digger POV looks straight out from just behind the cutter and ignores CT clipping. Switch back to ORBIT / CT for slicing and free rotation."
-        } else if (followDigger) {
-            "Follow now keeps the camera and all X/Y/Z slice positions on the machine. Switching slice axis stays centred on the digger."
-        } else {
-            "Drag to rotate • pinch to zoom • CT slices update progressively while you move them."
+        text = when {
+            !rockVisible -> "Rock is hidden using a direct tunnel skin, so this view stays responsive even if detailed geology is still refining."
+            cameraMode == CameraMode.DIGGER_POV -> "Digger POV looks straight out from just behind the cutter and ignores CT clipping."
+            followDigger -> "Follow keeps the camera and all X/Y/Z slice positions on the machine."
+            else -> "Drag to rotate • pinch to zoom • X/Y/Z slices inspect the solid geology."
         },
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
@@ -603,7 +654,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.7 applies completed async geometry progressively instead of discarding useful intermediate revisions. Live excavation is also sampled more finely, with a second refinement pass when digging stops.",
+        text = "0.8 fast-paths untouched solid shell chunks, compacts dense tunnel segments and uses two bounded rock workers. The queue should now follow excavation rather than world size.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),

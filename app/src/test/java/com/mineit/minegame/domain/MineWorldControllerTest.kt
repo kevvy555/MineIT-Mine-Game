@@ -29,6 +29,35 @@ class MineWorldControllerTest {
     }
 
     @Test
+    fun miningSpeedMultiplierChangesTravelDistanceAndIsClamped() {
+        val origin = MineWorldState().tunnel.end
+        val normal = MineWorldController.tick(
+            MineWorldController.startDigging(MineWorldState()),
+            0.25f,
+        )
+        val fastState = MineWorldController.setDigSpeedMultiplier(MineWorldState(), 2f)
+        val fast = MineWorldController.tick(
+            MineWorldController.startDigging(fastState),
+            0.25f,
+        )
+
+        val normalTravel = MineWorldGeometry.distance(origin, normal.tunnel.end)
+        val fastTravel = MineWorldGeometry.distance(origin, fast.tunnel.end)
+
+        assertEquals(normalTravel * 2f, fastTravel, 0.01f)
+        assertEquals(
+            MineWorldController.MIN_DIG_SPEED_MULTIPLIER,
+            MineWorldController.setDigSpeedMultiplier(MineWorldState(), -5f).digSpeedMultiplier,
+            0.001f,
+        )
+        assertEquals(
+            MineWorldController.MAX_DIG_SPEED_MULTIPLIER,
+            MineWorldController.setDigSpeedMultiplier(MineWorldState(), 9f).digSpeedMultiplier,
+            0.001f,
+        )
+    }
+
+    @Test
     fun stoppedSteeringPreviewsDirectionAndStartCommitsIt() {
         val preview = MineWorldController.setSteering(MineWorldState(), 0.5f)
 
