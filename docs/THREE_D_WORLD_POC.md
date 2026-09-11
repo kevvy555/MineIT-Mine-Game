@@ -1,115 +1,94 @@
-# 3D Geological World POC — 0.8.0
+# 3D Geological World POC — 0.9.0
 
-## Purpose
+## Why 0.9 exists
 
-0.8 follows a useful real-device result from 0.7: the OpenGL renderer remained at **90 FPS on a Pixel 7**, but CPU geometry production did not keep up with excavation. At roughly 165 m depth diagnostics showed examples around **3.3 s per chunk**, **7.4 s per CT cap** and a queue of **155** pending chunk rebuilds.
+0.8 proved that OpenGL rendering itself is not the mobile bottleneck: the Pixel 7 continued to hold roughly 90 FPS. It also exposed two architectural defects in the presentation pipeline.
 
-That means the remaining problem is not GPU frame rendering. It is the amount of CPU meshing work generated as the geological world expands.
+1. The shader clip plane moved immediately with the X/Y/Z slider, but the solid CT face was a separately generated CPU mesh. On a larger world that mesh could arrive hundreds of milliseconds later, so the visible cut face lagged behind the slider.
+2. The enclosing geological block was still represented as many asynchronous boundary-chunk meshes. When the generated world expanded, old boundary chunks disappeared before all replacement boundary chunks had arrived, producing large rectangular holes and a queue that again grew into the tens/hundreds.
 
-This pass therefore targets:
-
-1. keeping the visible excavation much closer to the authoritative digger position;
-2. preventing untouched world-shell growth from creating an ever-growing expensive queue;
-3. reducing repeated work caused by dense 100 ms simulation tunnel segments;
-4. adding a player-controlled excavation speed;
-5. adding a tunnel-only inspection view which hides rock but retains the grass surface.
+0.9 removes both failure modes instead of tuning their timers.
 
 ## Canonical ownership
 
-`domain/` remains authoritative for geology, tunnel geometry, ore discovery, machine heading/slope, **excavation speed**, continuous excavation and material accounting.
+`domain/` remains authoritative for the real mine: tunnel path, machine position/direction, ore discovery, material removal, excavation speed and generated extent.
 
-Camera modes, CT slicing, rock visibility, follow behaviour, mesh scheduling and GPU presentation remain UI/render concerns. ROCK OFF changes presentation only; it does not alter geology or excavation state.
+The renderer owns only presentation: camera, clipping, global shell, CT face, cached excavation meshes and ROCK OFF presentation.
 
-## World-shell fast path
+## Global geological shell
 
-The previous renderer used marching tetrahedra for any chunk on an outer world boundary, even when the entire chunk contained untouched solid rock. As depth and X/Y extent grew, this created many expensive jobs that added almost no visual information.
+The untouched geological volume is no longer a collection of boundary chunk jobs.
 
-0.8 keeps the same chunk/world model but changes rendering cost:
+The renderer now builds one constant-cost shell from the current world bounds:
 
-- chunks containing excavation still use the scalar-field polygoniser;
-- untouched outer chunks are represented directly by flat boundary quads;
-- completely internal untouched chunks remain unmeshed;
-- old shell faces are removed/replaced normally when the extent expands.
+- four vertical rock walls;
+- one bottom rock face;
+- the grass surface is a separate mesh so the mine entrance can remain open.
 
-The important scaling property is that expensive work should now track **excavated workings**, not the volume or surface area of the entire enclosing geological box.
+Changing the world from 48 m wide to hundreds of metres wide changes vertex positions, not the number of shell jobs. There is therefore no period where old wall chunks have disappeared while replacement wall chunks are waiting in the polygonisation queue.
 
-## Tunnel-segment compaction
+Chunk meshing is now reserved exclusively for chunks containing actual excavation.
 
-The simulation deliberately records a point every 100 ms for responsive steering and accurate gameplay state. That detail level is excessive for a 1.0–1.6 m render grid.
+## Excavation-only scalar meshes
 
-A render-only `TunnelSegmentReducer` now merges short contiguous, nearly-collinear segments before scalar-field sampling. It preserves sharp bends and exact endpoints. Domain tunnel data remains unchanged.
+Detailed tunnel walls still use the scalar field and marching tetrahedra, because that is where smooth arbitrary excavation matters.
 
-This reduces the number of distance-to-segment calculations made by every scalar-field sample without reducing simulation precision.
+A detailed chunk samples only distance to nearby tunnel segments. It no longer also generates world-box boundary surfaces. Untouched chunks produce no detailed mesh at all.
 
-## Removing redundant per-triangle field samples
+This changes the key scaling property from:
 
-0.7 sampled the full solid field twice for every emitted triangle to decide its winding direction. OpenGL culling is disabled and the simple lighting shader uses the absolute normal/light dot product, so changing the sign of the normal did not affect visible output.
+> cost grows with the enclosing geological box
 
-0.8 removes those two expensive scalar-field queries and uses the geometric triangle normal directly.
+into:
 
-## Bounded parallel meshing and priority
+> cost grows with the excavated workings
 
-Chunk meshing now uses **two low-priority background workers** rather than one. This is deliberately bounded: the goal is to improve throughput without creating an unbounded CPU/battery load.
+## Immediate analytic CT slices
 
-While digging:
+The CT cut face is no longer generated by scanning a regular 2D grid across the entire X/Y/Z cross-section.
 
-- the current face is prioritised by distance;
-- a new active coarse rebuild replaces pending stopped/refined work for the same chunk;
-- fine stopped refinement receives a large scheduling penalty until active excavation work is clear;
-- completed intermediate revisions continue to be shown progressively.
+Each frame that the slice changes, the renderer can cheaply construct:
 
-Live/refined grid spacing remains approximately **1.6 m / 1.0 m**.
+1. a rock plane exactly at the selected X/Y/Z position;
+2. depth shading bands for vertical sections;
+3. purple analytic intersections where the discovered connected ore body crosses the plane;
+4. dark analytic intersections where excavated tunnel geometry crosses the plane.
 
-## CT cap throughput
+Only tunnel segments near the selected plane are considered, and those segments are still compacted for presentation.
 
-The solid CT cap remains asynchronous and independent of rock chunk workers. 0.8 also reduces cap pressure:
+The slice is built directly on the OpenGL render thread because its work is now proportional to actual intersections rather than world area. This is intentional: it guarantees the CT face and shader clip use the same current slider value in the same frame. There is no asynchronous CT queue and therefore no stale intermediate slice that can visibly trail the user's finger.
 
-- cap cells use a lighter sampling step;
-- movement smaller than roughly 1 m does not enqueue another expensive rebuild;
-- only tunnel segments capable of intersecting the selected slice are supplied to the cap builder;
-- those segments are compacted before sampling.
+The diagnostics `cap ms` field now measures this immediate analytic slice build; `cap BUSY` should remain idle because there is no cap worker.
 
-The previous cap stays visible until a newer result is ready, preserving the solid CT appearance.
+## Surface and ROCK OFF
 
-## Excavation speed
+Grass remains a separate surface mesh and is retained in ROCK OFF mode. The existing direct tunnel overview remains independent of the detailed rock mesh, so the player can still inspect the entire workings even if tunnel-wall refinement is occurring in the background.
 
-The CONTROL panel adds a **SPEED** slider from **0.25× to 2.0×**.
+## Background work that remains
 
-This is domain state and changes actual distance excavated per simulation tick. It therefore changes tunnel length, removed volume, waste tonnage, ore contact and world expansion consistently rather than only speeding up an animation.
+Only detailed excavation chunks use background workers.
 
-## ROCK OFF — tunnel-only inspection
+- two bounded low-priority workers remain;
+- current-face coarse work remains prioritised over stopped refinement;
+- tunnel-segment reduction remains in place;
+- completed tunnel chunks are progressively uploaded;
+- world expansion does not enqueue untouched rock.
 
-VIEW adds **ROCK ON / ROCK OFF**.
+## What to test on device
 
-ROCK OFF:
+1. Move X, Y and Z sliders rapidly through a small and a large world. The solid CT face should stay visually attached to the slider rather than catching up afterwards.
+2. Expand the mine substantially in X/Y/Z. Outer rock walls should remain one coherent block with no rectangular missing boundary regions.
+3. Dig at 2.0× for a long period. `queue` should represent excavation work only and should not grow merely because the world box gains surface area.
+4. Compare `cap ms` with the 0.8 deep-world examples that reached hundreds of milliseconds. It should be near-constant and dramatically lower.
+5. Confirm ROCK OFF still shows the complete tunnel network and grass reference surface.
+6. Confirm the tunnel entrance remains open at the grass surface.
 
-- hides the geological chunk meshes and CT cap;
-- retains a lightweight grass surface as the surface reference;
-- renders the complete excavated tunnel directly as a smooth low-cost tube generated from the authoritative tunnel path;
-- keeps ore colouring on relevant tunnel sections after discovery;
-- keeps the third-person/x-ray digger and normal camera controls.
+## Still outside this POC
 
-This view is intentionally independent of detailed geological remeshing, so the player can inspect the full mine immediately even if rock refinement is still underway.
-
-## What to evaluate
-
-1. During a long continuous shaft/drive, does queue depth remain small instead of growing into the tens/hundreds?
-2. How do `mesh ms` values compare with the 0.7 examples of ~700–3200 ms?
-3. How do `cap ms` values compare with the observed ~7.4 s deep-world cap build?
-4. Does the excavated rock surface stay materially closer to the digger while follow mode is active?
-5. At 2.0× speed, can the geometry pipeline still remain bounded?
-6. Is ROCK OFF useful for understanding the complete tunnel network, and does the retained grass surface give enough orientation?
-7. Does the speed control feel useful from 0.25× through 2.0×?
-
-## Still deliberately excluded
-
-- broken-rock removal logistics;
+- broken-rock haulage and disposal;
 - shaft hoisting;
-- workers;
-- power and ventilation;
-- multiple geology types;
-- exploration uncertainty;
-- arbitrary tunnel profiles and stopes;
-- save/load;
-- sparse disk-backed chunk streaming;
-- production lighting/textures.
+- workers, power and ventilation;
+- multiple geology families;
+- exploration confidence/uncertainty;
+- production stopes and arbitrary excavation profiles;
+- save/load and sparse disk-backed world streaming.

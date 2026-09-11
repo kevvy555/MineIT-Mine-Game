@@ -39,17 +39,11 @@ internal object ChunkMeshPlanner {
     }
 
     /**
-     * Completely solid interior chunks cannot contribute any visible triangles. Only outer world
-     * faces or chunks touched by excavation need a generated rock mesh.
+     * Detailed scalar-field meshes now represent excavation only. The enclosing geological block
+     * is rendered by one global shell, so untouched boundary chunks must never enter the expensive
+     * marching-tetrahedra queue.
      */
-    fun requiresMesh(
-        key: ChunkKey,
-        extent: ChunkExtent,
-        hasTunnelSegments: Boolean,
-    ): Boolean = hasTunnelSegments ||
-        key.x == extent.minChunkX || key.x == extent.maxChunkX ||
-        key.y == extent.minChunkY || key.y == extent.maxChunkY ||
-        key.z == extent.minChunkZ || key.z == extent.maxChunkZ
+    fun requiresMesh(hasTunnelSegments: Boolean): Boolean = hasTunnelSegments
 
     fun affectedChunks(
         segment: TunnelSegment,
@@ -86,42 +80,6 @@ internal object ChunkMeshPlanner {
         }
     }
 
-    fun chunksWhoseBoundaryChanged(
-        previous: ChunkExtent,
-        current: ChunkExtent,
-    ): Set<ChunkKey> = buildSet {
-        if (current.minChunkX < previous.minChunkX) {
-            for (z in previous.minChunkZ..previous.maxChunkZ) {
-                for (y in previous.minChunkY..previous.maxChunkY) add(ChunkKey(previous.minChunkX, y, z))
-            }
-        }
-        if (current.maxChunkX > previous.maxChunkX) {
-            for (z in previous.minChunkZ..previous.maxChunkZ) {
-                for (y in previous.minChunkY..previous.maxChunkY) add(ChunkKey(previous.maxChunkX, y, z))
-            }
-        }
-        if (current.minChunkY < previous.minChunkY) {
-            for (z in previous.minChunkZ..previous.maxChunkZ) {
-                for (x in previous.minChunkX..previous.maxChunkX) add(ChunkKey(x, previous.minChunkY, z))
-            }
-        }
-        if (current.maxChunkY > previous.maxChunkY) {
-            for (z in previous.minChunkZ..previous.maxChunkZ) {
-                for (x in previous.minChunkX..previous.maxChunkX) add(ChunkKey(x, previous.maxChunkY, z))
-            }
-        }
-        if (current.minChunkZ < previous.minChunkZ) {
-            for (y in previous.minChunkY..previous.maxChunkY) {
-                for (x in previous.minChunkX..previous.maxChunkX) add(ChunkKey(x, y, previous.minChunkZ))
-            }
-        }
-        if (current.maxChunkZ > previous.maxChunkZ) {
-            for (y in previous.minChunkY..previous.maxChunkY) {
-                for (x in previous.minChunkX..previous.maxChunkX) add(ChunkKey(x, y, previous.maxChunkZ))
-            }
-        }
-    }
-
     fun segmentTouchesSlice(
         segment: TunnelSegment,
         axis: ClipAxis,
@@ -146,9 +104,9 @@ internal object ChunkMeshPlanner {
     ): Set<ChunkKey> {
         val size = MineWorldController.CHUNK_SIZE_METRES
         fun intersects(index: Int): Boolean {
-            val min = index * size
-            val max = (index + 1) * size
-            return clipValue >= min - paddingMetres && clipValue <= max + paddingMetres
+            val minimum = index * size
+            val maximum = (index + 1) * size
+            return clipValue >= minimum - paddingMetres && clipValue <= maximum + paddingMetres
         }
 
         return allChunks(extent).filterTo(mutableSetOf()) { key ->
@@ -161,12 +119,12 @@ internal object ChunkMeshPlanner {
     }
 
     fun segmentDistanceToBounds(segment: TunnelSegment, bounds: MineWorldBounds): Float {
-        fun axisDistance(a: Float, b: Float, min: Float, max: Float): Float {
-            val low = kotlin.math.min(a, b)
-            val high = kotlin.math.max(a, b)
+        fun axisDistance(a: Float, b: Float, minimum: Float, maximum: Float): Float {
+            val low = min(a, b)
+            val high = max(a, b)
             return when {
-                high < min -> min - high
-                low > max -> low - max
+                high < minimum -> minimum - high
+                low > maximum -> low - maximum
                 else -> 0f
             }
         }
