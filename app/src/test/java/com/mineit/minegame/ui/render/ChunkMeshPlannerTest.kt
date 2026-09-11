@@ -18,28 +18,9 @@ class ChunkMeshPlannerTest {
     )
 
     @Test
-    fun untouchedInteriorChunkDoesNotNeedMesh() {
-        assertFalse(
-            ChunkMeshPlanner.requiresMesh(
-                key = ChunkKey(0, 0, 1),
-                extent = extent,
-                hasTunnelSegments = false,
-            ),
-        )
-        assertTrue(
-            ChunkMeshPlanner.requiresMesh(
-                key = ChunkKey(0, 0, 1),
-                extent = extent,
-                hasTunnelSegments = true,
-            ),
-        )
-        assertTrue(
-            ChunkMeshPlanner.requiresMesh(
-                key = ChunkKey(0, 0, 0),
-                extent = extent,
-                hasTunnelSegments = false,
-            ),
-        )
+    fun onlyTunnelBearingChunksNeedDetailedMesh() {
+        assertFalse(ChunkMeshPlanner.requiresMesh(hasTunnelSegments = false))
+        assertTrue(ChunkMeshPlanner.requiresMesh(hasTunnelSegments = true))
     }
 
     @Test
@@ -84,17 +65,5 @@ class ChunkMeshPlannerTest {
                 paddingMetres = 1f,
             ),
         )
-    }
-
-    @Test
-    fun expandingWorldMarksOldOuterFaceForRemesh() {
-        val previous = ChunkExtent(-1, 0, -1, 0, 0, 1)
-        val current = previous.copy(maxChunkX = 1)
-
-        val changed = ChunkMeshPlanner.chunksWhoseBoundaryChanged(previous, current)
-
-        assertTrue(ChunkKey(0, -1, 0) in changed)
-        assertTrue(ChunkKey(0, 0, 1) in changed)
-        assertFalse(ChunkKey(-1, 0, 0) in changed)
     }
 }
