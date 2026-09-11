@@ -49,7 +49,7 @@ fun MineWorldScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var surfaceView by remember { mutableStateOf<MineSurfaceView?>(null) }
-    var clipAxis by remember { mutableStateOf(ClipAxis.Z) }
+    var clipAxis by remember { mutableStateOf(ClipAxis.X) }
     var clipFraction by remember { mutableStateOf(0.18f) }
     var clipFlipped by remember { mutableStateOf(false) }
     var clipEnabled by remember { mutableStateOf(true) }
