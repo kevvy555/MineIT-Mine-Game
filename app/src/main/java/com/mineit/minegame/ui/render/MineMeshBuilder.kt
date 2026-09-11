@@ -19,13 +19,25 @@ data class MineMesh(
     val vertexCount: Int,
 )
 
+/**
+ * Generates presentation geometry from the canonical 3D mine state.
+ *
+ * The expensive scalar-field polygoniser is deliberately restricted to tunnel-bearing chunks.
+ * The enclosing geological block is one global shell, while the CT face is an analytic plane with
+ * analytic tunnel/ore intersections. This keeps world growth and slice movement independent from
+ * the amount of untouched rock in the enclosing volume.
+ */
 internal object MineMeshBuilder {
     const val ACTIVE_GRID_STEP_METRES = 1.6f
     const val REFINED_GRID_STEP_METRES = 1.0f
 
-    private const val CUT_CAP_STEP_METRES = 1.35f
-    private const val CUT_CAP_EPSILON_METRES = 0.03f
     private const val TUNNEL_OVERVIEW_RING_SEGMENTS = 14
+    private const val SLICE_DISC_SEGMENTS = 16
+    private const val SLICE_BASE_OFFSET_METRES = 0.035f
+    private const val SLICE_ORE_OFFSET_METRES = 0.055f
+    private const val SLICE_TUNNEL_OFFSET_METRES = 0.075f
+    private const val SLICE_DEPTH_BAND_METRES = 12f
+    private const val ORE_SLICE_SAMPLE_METRES = 2.2f
     private const val GRASS_GRID_STEP_METRES = 2f
 
     private val tetrahedra = arrayOf(
@@ -37,28 +49,25 @@ internal object MineMeshBuilder {
         intArrayOf(0, 4, 5, 6),
     )
 
+    /**
+     * Detailed chunks now contain tunnel-wall geometry only. World-boundary faces are never
+     * polygonised here; the global shell owns those surfaces.
+     */
     fun buildChunk(
         state: MineWorldState,
         key: ChunkKey,
         tunnelSegments: Collection<TunnelSegment>,
         gridStepMetres: Float,
     ): MineMesh {
-        // Untouched outer chunks are just flat world faces. Running the full scalar-field
-        // polygoniser over every boundary chunk made world cost grow with the enclosing box rather
-        // than the excavated mine. Keep marching tetrahedra only for chunks that actually contain
-        // excavation; untouched boundary faces can be represented exactly with a few triangles.
-        if (tunnelSegments.isEmpty()) {
-            return buildUntouchedBoundaryChunk(state, key)
-        }
+        if (tunnelSegments.isEmpty()) return emptyMesh()
 
-        val worldBounds = state.bounds
-        val chunkBounds = key.bounds()
-        val minX = chunkBounds.minX - if (chunkBounds.minX == worldBounds.minX) gridStepMetres else 0f
-        val maxX = chunkBounds.maxX + if (chunkBounds.maxX == worldBounds.maxX) gridStepMetres else 0f
-        val minY = chunkBounds.minY - if (chunkBounds.minY == worldBounds.minY) gridStepMetres else 0f
-        val maxY = chunkBounds.maxY + if (chunkBounds.maxY == worldBounds.maxY) gridStepMetres else 0f
-        val minZ = chunkBounds.minZ - if (chunkBounds.minZ == worldBounds.minZ) gridStepMetres else 0f
-        val maxZ = chunkBounds.maxZ + if (chunkBounds.maxZ == worldBounds.maxZ) gridStepMetres else 0f
+        val chunk = key.bounds()
+        val minX = chunk.minX
+        val maxX = chunk.maxX
+        val minY = chunk.minY
+        val maxY = chunk.maxY
+        val minZ = chunk.minZ
+        val maxZ = chunk.maxZ
 
         val xCount = (((maxX - minX) / gridStepMetres).roundToInt() + 1).coerceAtLeast(2)
         val yCount = (((maxY - minY) / gridStepMetres).roundToInt() + 1).coerceAtLeast(2)
@@ -75,12 +84,9 @@ internal object MineMeshBuilder {
         for (z in 0 until zCount) {
             for (y in 0 until yCount) {
                 for (x in 0 until xCount) {
-                    values[index(x, y, z)] = MineWorldGeometry.solidMargin(
-                        point = point(x, y, z),
-                        bounds = worldBounds,
-                        tunnelRadiusMetres = state.tunnel.radiusMetres,
-                        segments = tunnelSegments,
-                    )
+                    values[index(x, y, z)] =
+                        MineWorldGeometry.distanceToTunnelSegments(point(x, y, z), tunnelSegments) -
+                            state.tunnel.radiusMetres
                 }
             }
         }
@@ -122,10 +128,81 @@ internal object MineMeshBuilder {
                 }
             }
         }
+        return output.toMesh()
+    }
+
+    /**
+     * The geological block shell is constant-cost regardless of world size. The top face is owned
+     * separately by [buildGrassSurface] so surface tunnel openings remain visible.
+     */
+    fun buildWorldShell(state: MineWorldState): MineMesh {
+        val bounds = state.bounds
+        val output = FloatAccumulator(128)
+
+        fun colourAt(point: MinePoint3D) = rockColour(point, state)
+
+        val leftCentre = MinePoint3D(bounds.minX, bounds.centre.y, bounds.centre.z)
+        appendQuad(
+            output,
+            MinePoint3D(bounds.minX, bounds.minY, bounds.minZ),
+            MinePoint3D(bounds.minX, bounds.minY, bounds.maxZ),
+            MinePoint3D(bounds.minX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(bounds.minX, bounds.maxY, bounds.minZ),
+            MinePoint3D(-1f, 0f, 0f),
+            colourAt(leftCentre),
+        )
+
+        val rightCentre = MinePoint3D(bounds.maxX, bounds.centre.y, bounds.centre.z)
+        appendQuad(
+            output,
+            MinePoint3D(bounds.maxX, bounds.minY, bounds.minZ),
+            MinePoint3D(bounds.maxX, bounds.maxY, bounds.minZ),
+            MinePoint3D(bounds.maxX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(bounds.maxX, bounds.minY, bounds.maxZ),
+            MinePoint3D(1f, 0f, 0f),
+            colourAt(rightCentre),
+        )
+
+        val frontCentre = MinePoint3D(bounds.centre.x, bounds.minY, bounds.centre.z)
+        appendQuad(
+            output,
+            MinePoint3D(bounds.minX, bounds.minY, bounds.minZ),
+            MinePoint3D(bounds.maxX, bounds.minY, bounds.minZ),
+            MinePoint3D(bounds.maxX, bounds.minY, bounds.maxZ),
+            MinePoint3D(bounds.minX, bounds.minY, bounds.maxZ),
+            MinePoint3D(0f, -1f, 0f),
+            colourAt(frontCentre),
+        )
+
+        val backCentre = MinePoint3D(bounds.centre.x, bounds.maxY, bounds.centre.z)
+        appendQuad(
+            output,
+            MinePoint3D(bounds.minX, bounds.maxY, bounds.minZ),
+            MinePoint3D(bounds.minX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(bounds.maxX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(bounds.maxX, bounds.maxY, bounds.minZ),
+            MinePoint3D(0f, 1f, 0f),
+            colourAt(backCentre),
+        )
+
+        val bottomCentre = MinePoint3D(bounds.centre.x, bounds.centre.y, bounds.maxZ)
+        appendQuad(
+            output,
+            MinePoint3D(bounds.minX, bounds.minY, bounds.maxZ),
+            MinePoint3D(bounds.maxX, bounds.minY, bounds.maxZ),
+            MinePoint3D(bounds.maxX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(bounds.minX, bounds.maxY, bounds.maxZ),
+            MinePoint3D(0f, 0f, 1f),
+            colourAt(bottomCentre),
+        )
 
         return output.toMesh()
     }
 
+    /**
+     * Constant-area CT construction: one rock plane plus only the tunnel and ore intersections that
+     * actually touch that plane. It no longer scans a 2D grid across the whole generated world.
+     */
     fun buildCutCap(
         state: MineWorldState,
         axis: ClipAxis,
@@ -134,66 +211,55 @@ internal object MineMeshBuilder {
         tunnelSegments: Collection<TunnelSegment>,
     ): MineMesh {
         val bounds = state.bounds
-        val clipValue = clipValue(state, axis, fraction)
-        val keptDirection = if (flipped) -1f else 1f
-        val plane = clipValue + (keptDirection * CUT_CAP_EPSILON_METRES)
-        val output = FloatAccumulator(16_384)
+        val clip = clipValue(state, axis, fraction)
+        val normal = capNormal(axis, flipped)
+        val normalSign = axisCoordinate(normal, axis)
+        val basePlane = clip + (normalSign * SLICE_BASE_OFFSET_METRES)
+        val orePlane = clip + (normalSign * SLICE_ORE_OFFSET_METRES)
+        val tunnelPlane = clip + (normalSign * SLICE_TUNNEL_OFFSET_METRES)
+        val output = FloatAccumulator(8_192)
 
-        val uMin: Float
-        val uMax: Float
-        val vMin: Float
-        val vMax: Float
-        when (axis) {
-            ClipAxis.X -> {
-                uMin = bounds.minY
-                uMax = bounds.maxY
-                vMin = bounds.minZ
-                vMax = bounds.maxZ
-            }
-            ClipAxis.Y -> {
-                uMin = bounds.minX
-                uMax = bounds.maxX
-                vMin = bounds.minZ
-                vMax = bounds.maxZ
-            }
-            ClipAxis.Z -> {
-                uMin = bounds.minX
-                uMax = bounds.maxX
-                vMin = bounds.minY
-                vMax = bounds.maxY
+        appendRockSliceBase(output, state, axis, basePlane, normal)
+
+        if (state.oreBodyDiscovered) {
+            state.oreBody.zipWithNext().forEach { (start, end) ->
+                val length = MineWorldGeometry.distance(start.centre, end.centre)
+                val steps = max(1, ceil(length / ORE_SLICE_SAMPLE_METRES).toInt())
+                for (step in 0..steps) {
+                    val t = step.toFloat() / steps.toFloat()
+                    val centre = MineWorldGeometry.interpolate(start.centre, end.centre, t)
+                    val radius = start.radiusMetres + ((end.radiusMetres - start.radiusMetres) * t)
+                    appendSliceDiscIfIntersecting(
+                        output = output,
+                        axis = axis,
+                        clipValue = clip,
+                        planeValue = orePlane,
+                        centre = centre,
+                        radius = radius,
+                        normal = normal,
+                        colour = ORE_COLOUR,
+                    )
+                }
             }
         }
 
-        val uCells = ceil((uMax - uMin) / CUT_CAP_STEP_METRES).toInt().coerceAtLeast(1)
-        val vCells = ceil((vMax - vMin) / CUT_CAP_STEP_METRES).toInt().coerceAtLeast(1)
-
-        for (vIndex in 0 until vCells) {
-            val v0 = vMin + (vIndex * CUT_CAP_STEP_METRES)
-            val v1 = minOf(v0 + CUT_CAP_STEP_METRES, vMax)
-            for (uIndex in 0 until uCells) {
-                val u0 = uMin + (uIndex * CUT_CAP_STEP_METRES)
-                val u1 = minOf(u0 + CUT_CAP_STEP_METRES, uMax)
-                val centre = capPoint(axis, plane, (u0 + u1) * 0.5f, (v0 + v1) * 0.5f)
-                if (
-                    MineWorldGeometry.solidMargin(
-                        point = centre,
-                        bounds = bounds,
-                        tunnelRadiusMetres = state.tunnel.radiusMetres,
-                        segments = tunnelSegments,
-                    ) <= 0f
-                ) {
-                    continue
-                }
-
-                val colour = cutCapColour(centre, state)
-                val normal = capNormal(axis, flipped)
-                val p00 = capPoint(axis, plane, u0, v0)
-                val p10 = capPoint(axis, plane, u1, v0)
-                val p11 = capPoint(axis, plane, u1, v1)
-                val p01 = capPoint(axis, plane, u0, v1)
-
-                output.appendTriangle(p00, p10, p11, normal, colour)
-                output.appendTriangle(p00, p11, p01, normal, colour)
+        val tunnelRadius = state.tunnel.radiusMetres
+        val sampleSpacing = max(0.8f, tunnelRadius * 0.55f)
+        tunnelSegments.forEach { segment ->
+            val length = MineWorldGeometry.distance(segment.start, segment.end)
+            val steps = max(1, ceil(length / sampleSpacing).toInt())
+            for (step in 0..steps) {
+                val t = step.toFloat() / steps.toFloat()
+                appendSliceDiscIfIntersecting(
+                    output = output,
+                    axis = axis,
+                    clipValue = clip,
+                    planeValue = tunnelPlane,
+                    centre = MineWorldGeometry.interpolate(segment.start, segment.end, t),
+                    radius = tunnelRadius,
+                    normal = normal,
+                    colour = TUNNEL_COLOUR,
+                )
             }
         }
 
@@ -222,14 +288,9 @@ internal object MineMeshBuilder {
 
         val nose = state.tunnel.end
         val output = FloatAccumulator(512)
-        val bodyCentre = combine(
-            nose,
-            forward to -2.45f,
-            up to 0.15f,
-        )
         appendBox(
             output = output,
-            centre = bodyCentre,
+            centre = combine(nose, forward to -2.45f, up to 0.15f),
             forward = forward,
             right = right,
             up = up,
@@ -238,11 +299,9 @@ internal object MineMeshBuilder {
             halfHeight = 1.05f,
             colour = floatArrayOf(0.82f, 0.39f, 0.07f),
         )
-
-        val cutterCentre = combine(nose, forward to -0.12f)
         appendBox(
             output = output,
-            centre = cutterCentre,
+            centre = combine(nose, forward to -0.12f),
             forward = forward,
             right = right,
             up = up,
@@ -251,15 +310,9 @@ internal object MineMeshBuilder {
             halfHeight = 1.32f,
             colour = floatArrayOf(0.98f, 0.70f, 0.12f),
         )
-
-        val spineCentre = combine(
-            nose,
-            forward to -1.35f,
-            up to -1.12f,
-        )
         appendBox(
             output = output,
-            centre = spineCentre,
+            centre = combine(nose, forward to -1.35f, up to -1.12f),
             forward = forward,
             right = right,
             up = up,
@@ -268,11 +321,9 @@ internal object MineMeshBuilder {
             halfHeight = 0.10f,
             colour = floatArrayOf(1.0f, 0.88f, 0.24f),
         )
-
-        val rearCentre = combine(nose, forward to -5.0f)
         appendBox(
             output = output,
-            centre = rearCentre,
+            centre = combine(nose, forward to -5.0f),
             forward = forward,
             right = right,
             up = up,
@@ -284,14 +335,10 @@ internal object MineMeshBuilder {
         return output.toMesh()
     }
 
-    /**
-     * Cheap explicit tunnel skin used by ROCK OFF. It is intentionally independent of the scalar
-     * rock mesh, so the player can inspect the complete excavation immediately even while detailed
-     * rock chunks are still being refined in the background.
-     */
+    /** Lightweight direct tunnel skin used by ROCK OFF. */
     fun buildTunnelOverview(state: MineWorldState): MineMesh {
         val points = state.tunnel.points
-        if (points.size < 2) return MineMesh(FloatArray(0), 0)
+        if (points.size < 2) return emptyMesh()
 
         val radius = state.tunnel.radiusMetres
         val rings = Array(points.size) { index ->
@@ -311,9 +358,8 @@ internal object MineMeshBuilder {
             }
             val right = normalized(cross(reference, tangent))
             val up = normalized(cross(tangent, right))
-
             Array(TUNNEL_OVERVIEW_RING_SEGMENTS) { ringIndex ->
-                val radians = (2.0 * PI * ringIndex.toDouble() / TUNNEL_OVERVIEW_RING_SEGMENTS.toDouble())
+                val radians = 2.0 * PI * ringIndex.toDouble() / TUNNEL_OVERVIEW_RING_SEGMENTS.toDouble()
                 combine(
                     points[index],
                     right to (cos(radians).toFloat() * radius),
@@ -329,11 +375,10 @@ internal object MineMeshBuilder {
                 state.oreBodyDiscovered &&
                 MineWorldGeometry.oreMargin(midpoint, state.oreBody) >= -(radius * 0.65f)
             ) {
-                floatArrayOf(0.72f, 0.35f, 0.94f)
+                ORE_COLOUR
             } else {
-                floatArrayOf(0.23f, 0.26f, 0.29f)
+                TUNNEL_COLOUR
             }
-
             for (ringIndex in 0 until TUNNEL_OVERVIEW_RING_SEGMENTS) {
                 val nextRing = (ringIndex + 1) % TUNNEL_OVERVIEW_RING_SEGMENTS
                 val a = rings[index][ringIndex]
@@ -347,10 +392,7 @@ internal object MineMeshBuilder {
         return output.toMesh()
     }
 
-    /**
-     * Grass remains visible in ROCK OFF mode. Only the few tunnel segments near the surface are
-     * tested, and cells over the shaft/tunnel opening are omitted.
-     */
+    /** Grass is a separate surface so the global rock shell can remain constant-cost. */
     fun buildGrassSurface(state: MineWorldState): MineMesh {
         val bounds = state.bounds
         val radius = state.tunnel.radiusMetres
@@ -360,7 +402,6 @@ internal object MineMeshBuilder {
         val xCells = ceil(bounds.width / GRASS_GRID_STEP_METRES).toInt().coerceAtLeast(1)
         val yCells = ceil(bounds.height / GRASS_GRID_STEP_METRES).toInt().coerceAtLeast(1)
         val output = FloatAccumulator(xCells * yCells * 18)
-        val colour = floatArrayOf(0.20f, 0.48f, 0.22f)
         val normal = MinePoint3D(0f, 0f, -1f)
 
         for (yIndex in 0 until yCells) {
@@ -382,8 +423,8 @@ internal object MineMeshBuilder {
                 val p10 = MinePoint3D(x1, y0, bounds.minZ)
                 val p11 = MinePoint3D(x1, y1, bounds.minZ)
                 val p01 = MinePoint3D(x0, y1, bounds.minZ)
-                output.appendTriangle(p00, p11, p10, normal, colour)
-                output.appendTriangle(p00, p01, p11, normal, colour)
+                output.appendTriangle(p00, p11, p10, normal, GRASS_COLOUR)
+                output.appendTriangle(p00, p01, p11, normal, GRASS_COLOUR)
             }
         }
         return output.toMesh()
@@ -395,81 +436,126 @@ internal object MineMeshBuilder {
         ClipAxis.Z -> state.bounds.minZ + (state.bounds.depth * fraction)
     }
 
-    private fun buildUntouchedBoundaryChunk(state: MineWorldState, key: ChunkKey): MineMesh {
-        val world = state.bounds
-        val chunk = key.bounds()
-        val output = FloatAccumulator(108)
+    private fun appendRockSliceBase(
+        output: FloatAccumulator,
+        state: MineWorldState,
+        axis: ClipAxis,
+        plane: Float,
+        normal: MinePoint3D,
+    ) {
+        val bounds = state.bounds
+        when (axis) {
+            ClipAxis.Z -> {
+                val centre = MinePoint3D(bounds.centre.x, bounds.centre.y, plane)
+                val colour = if (plane <= bounds.minZ + 0.45f) GRASS_COLOUR else rockColour(centre, state)
+                appendQuad(
+                    output,
+                    MinePoint3D(bounds.minX, bounds.minY, plane),
+                    MinePoint3D(bounds.maxX, bounds.minY, plane),
+                    MinePoint3D(bounds.maxX, bounds.maxY, plane),
+                    MinePoint3D(bounds.minX, bounds.maxY, plane),
+                    normal,
+                    colour,
+                )
+            }
 
-        fun rockAt(point: MinePoint3D) = rockColour(point, state)
-        val grass = floatArrayOf(0.20f, 0.48f, 0.22f)
-
-        if (chunk.minX == world.minX) {
-            val a = MinePoint3D(chunk.minX, chunk.minY, chunk.minZ)
-            val b = MinePoint3D(chunk.minX, chunk.minY, chunk.maxZ)
-            val c = MinePoint3D(chunk.minX, chunk.maxY, chunk.maxZ)
-            val d = MinePoint3D(chunk.minX, chunk.maxY, chunk.minZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(-1f, 0f, 0f), rockAt(chunk.centre()))
+            ClipAxis.X, ClipAxis.Y -> {
+                var z0 = bounds.minZ
+                while (z0 < bounds.maxZ - 0.001f) {
+                    val z1 = min(z0 + SLICE_DEPTH_BAND_METRES, bounds.maxZ)
+                    if (axis == ClipAxis.X) {
+                        val centre = MinePoint3D(plane, bounds.centre.y, (z0 + z1) * 0.5f)
+                        appendQuad(
+                            output,
+                            MinePoint3D(plane, bounds.minY, z0),
+                            MinePoint3D(plane, bounds.maxY, z0),
+                            MinePoint3D(plane, bounds.maxY, z1),
+                            MinePoint3D(plane, bounds.minY, z1),
+                            normal,
+                            rockColour(centre, state),
+                        )
+                    } else {
+                        val centre = MinePoint3D(bounds.centre.x, plane, (z0 + z1) * 0.5f)
+                        appendQuad(
+                            output,
+                            MinePoint3D(bounds.minX, plane, z0),
+                            MinePoint3D(bounds.minX, plane, z1),
+                            MinePoint3D(bounds.maxX, plane, z1),
+                            MinePoint3D(bounds.maxX, plane, z0),
+                            normal,
+                            rockColour(centre, state),
+                        )
+                    }
+                    z0 = z1
+                }
+            }
         }
-        if (chunk.maxX == world.maxX) {
-            val a = MinePoint3D(chunk.maxX, chunk.minY, chunk.minZ)
-            val b = MinePoint3D(chunk.maxX, chunk.maxY, chunk.minZ)
-            val c = MinePoint3D(chunk.maxX, chunk.maxY, chunk.maxZ)
-            val d = MinePoint3D(chunk.maxX, chunk.minY, chunk.maxZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(1f, 0f, 0f), rockAt(chunk.centre()))
-        }
-        if (chunk.minY == world.minY) {
-            val a = MinePoint3D(chunk.minX, chunk.minY, chunk.minZ)
-            val b = MinePoint3D(chunk.maxX, chunk.minY, chunk.minZ)
-            val c = MinePoint3D(chunk.maxX, chunk.minY, chunk.maxZ)
-            val d = MinePoint3D(chunk.minX, chunk.minY, chunk.maxZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(0f, -1f, 0f), rockAt(chunk.centre()))
-        }
-        if (chunk.maxY == world.maxY) {
-            val a = MinePoint3D(chunk.minX, chunk.maxY, chunk.minZ)
-            val b = MinePoint3D(chunk.minX, chunk.maxY, chunk.maxZ)
-            val c = MinePoint3D(chunk.maxX, chunk.maxY, chunk.maxZ)
-            val d = MinePoint3D(chunk.maxX, chunk.maxY, chunk.minZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(0f, 1f, 0f), rockAt(chunk.centre()))
-        }
-        if (chunk.minZ == world.minZ) {
-            val a = MinePoint3D(chunk.minX, chunk.minY, chunk.minZ)
-            val b = MinePoint3D(chunk.minX, chunk.maxY, chunk.minZ)
-            val c = MinePoint3D(chunk.maxX, chunk.maxY, chunk.minZ)
-            val d = MinePoint3D(chunk.maxX, chunk.minY, chunk.minZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(0f, 0f, -1f), grass)
-        }
-        if (chunk.maxZ == world.maxZ) {
-            val a = MinePoint3D(chunk.minX, chunk.minY, chunk.maxZ)
-            val b = MinePoint3D(chunk.maxX, chunk.minY, chunk.maxZ)
-            val c = MinePoint3D(chunk.maxX, chunk.maxY, chunk.maxZ)
-            val d = MinePoint3D(chunk.minX, chunk.maxY, chunk.maxZ)
-            appendQuad(output, a, b, c, d, MinePoint3D(0f, 0f, 1f), rockAt(chunk.centre()))
-        }
-
-        return output.toMesh()
     }
 
-    private fun MineWorldBoundsCentre(
-        minX: Float,
-        maxX: Float,
-        minY: Float,
-        maxY: Float,
-        minZ: Float,
-        maxZ: Float,
-    ) = MinePoint3D(
-        x = (minX + maxX) * 0.5f,
-        y = (minY + maxY) * 0.5f,
-        z = (minZ + maxZ) * 0.5f,
-    )
+    private fun appendSliceDiscIfIntersecting(
+        output: FloatAccumulator,
+        axis: ClipAxis,
+        clipValue: Float,
+        planeValue: Float,
+        centre: MinePoint3D,
+        radius: Float,
+        normal: MinePoint3D,
+        colour: FloatArray,
+    ) {
+        val distanceToPlane = abs(axisCoordinate(centre, axis) - clipValue)
+        if (distanceToPlane >= radius) return
+        val crossRadius = sqrt(max(0f, (radius * radius) - (distanceToPlane * distanceToPlane)))
+        if (crossRadius < 0.08f) return
 
-    private fun com.mineit.minegame.domain.MineWorldBounds.centre(): MinePoint3D = MineWorldBoundsCentre(
-        minX,
-        maxX,
-        minY,
-        maxY,
-        minZ,
-        maxZ,
-    )
+        val projected = withAxis(centre, axis, planeValue)
+        val u = when (axis) {
+            ClipAxis.X -> MinePoint3D(0f, 1f, 0f)
+            ClipAxis.Y -> MinePoint3D(1f, 0f, 0f)
+            ClipAxis.Z -> MinePoint3D(1f, 0f, 0f)
+        }
+        val v = when (axis) {
+            ClipAxis.X -> MinePoint3D(0f, 0f, 1f)
+            ClipAxis.Y -> MinePoint3D(0f, 0f, 1f)
+            ClipAxis.Z -> MinePoint3D(0f, 1f, 0f)
+        }
+
+        for (index in 0 until SLICE_DISC_SEGMENTS) {
+            val angleA = 2.0 * PI * index.toDouble() / SLICE_DISC_SEGMENTS.toDouble()
+            val angleB = 2.0 * PI * (index + 1).toDouble() / SLICE_DISC_SEGMENTS.toDouble()
+            val a = combine(
+                projected,
+                u to (cos(angleA).toFloat() * crossRadius),
+                v to (sin(angleA).toFloat() * crossRadius),
+            )
+            val b = combine(
+                projected,
+                u to (cos(angleB).toFloat() * crossRadius),
+                v to (sin(angleB).toFloat() * crossRadius),
+            )
+            output.appendTriangle(projected, a, b, normal, colour)
+        }
+    }
+
+    private fun axisCoordinate(point: MinePoint3D, axis: ClipAxis): Float = when (axis) {
+        ClipAxis.X -> point.x
+        ClipAxis.Y -> point.y
+        ClipAxis.Z -> point.z
+    }
+
+    private fun withAxis(point: MinePoint3D, axis: ClipAxis, value: Float): MinePoint3D = when (axis) {
+        ClipAxis.X -> point.copy(x = value)
+        ClipAxis.Y -> point.copy(y = value)
+        ClipAxis.Z -> point.copy(z = value)
+    }
+
+    private fun capNormal(axis: ClipAxis, flipped: Boolean): MinePoint3D {
+        val sign = if (flipped) 1f else -1f
+        return when (axis) {
+            ClipAxis.X -> MinePoint3D(sign, 0f, 0f)
+            ClipAxis.Y -> MinePoint3D(0f, sign, 0f)
+            ClipAxis.Z -> MinePoint3D(0f, 0f, sign)
+        }
+    }
 
     private fun polygoniseTetrahedron(
         points: List<MinePoint3D>,
@@ -479,17 +565,17 @@ internal object MineMeshBuilder {
         gridStepMetres: Float,
         output: FloatAccumulator,
     ) {
-        val inside = points.indices.filter { values[it] >= 0f }
-        val outside = points.indices.filter { values[it] < 0f }
-        if (inside.isEmpty() || outside.isEmpty()) return
+        val solid = points.indices.filter { values[it] >= 0f }
+        val air = points.indices.filter { values[it] < 0f }
+        if (solid.isEmpty() || air.isEmpty()) return
 
-        when (inside.size) {
+        when (solid.size) {
             1 -> {
-                val i = inside.single()
+                val inside = solid.single()
                 emitTriangle(
-                    interpolate(points[i], points[outside[0]], values[i], values[outside[0]]),
-                    interpolate(points[i], points[outside[1]], values[i], values[outside[1]]),
-                    interpolate(points[i], points[outside[2]], values[i], values[outside[2]]),
+                    interpolate(points[inside], points[air[0]], values[inside], values[air[0]]),
+                    interpolate(points[inside], points[air[1]], values[inside], values[air[1]]),
+                    interpolate(points[inside], points[air[2]], values[inside], values[air[2]]),
                     state,
                     tunnelSegments,
                     gridStepMetres,
@@ -498,11 +584,11 @@ internal object MineMeshBuilder {
             }
 
             3 -> {
-                val o = outside.single()
+                val outside = air.single()
                 emitTriangle(
-                    interpolate(points[o], points[inside[0]], values[o], values[inside[0]]),
-                    interpolate(points[o], points[inside[2]], values[o], values[inside[2]]),
-                    interpolate(points[o], points[inside[1]], values[o], values[inside[1]]),
+                    interpolate(points[outside], points[solid[0]], values[outside], values[solid[0]]),
+                    interpolate(points[outside], points[solid[2]], values[outside], values[solid[2]]),
+                    interpolate(points[outside], points[solid[1]], values[outside], values[solid[1]]),
                     state,
                     tunnelSegments,
                     gridStepMetres,
@@ -511,14 +597,14 @@ internal object MineMeshBuilder {
             }
 
             2 -> {
-                val i0 = inside[0]
-                val i1 = inside[1]
-                val o0 = outside[0]
-                val o1 = outside[1]
-                val p0 = interpolate(points[i0], points[o0], values[i0], values[o0])
-                val p1 = interpolate(points[i0], points[o1], values[i0], values[o1])
-                val p2 = interpolate(points[i1], points[o0], values[i1], values[o0])
-                val p3 = interpolate(points[i1], points[o1], values[i1], values[o1])
+                val s0 = solid[0]
+                val s1 = solid[1]
+                val a0 = air[0]
+                val a1 = air[1]
+                val p0 = interpolate(points[s0], points[a0], values[s0], values[a0])
+                val p1 = interpolate(points[s0], points[a1], values[s0], values[a1])
+                val p2 = interpolate(points[s1], points[a0], values[s1], values[a0])
+                val p3 = interpolate(points[s1], points[a1], values[s1], values[a1])
                 emitTriangle(p0, p1, p2, state, tunnelSegments, gridStepMetres, output)
                 emitTriangle(p1, p3, p2, state, tunnelSegments, gridStepMetres, output)
             }
@@ -545,18 +631,19 @@ internal object MineMeshBuilder {
         gridStepMetres: Float,
         output: FloatAccumulator,
     ) {
-        // The renderer deliberately has culling disabled and uses abs(dot(normal, light)), so the
-        // sign of the normal does not affect visibility or lighting. The previous implementation
-        // sampled the expensive solid field twice per triangle only to choose winding direction.
-        // Keeping the geometric normal removes that hot path without changing the rendered result.
         val normal = triangleNormal(first, second, third) ?: return
         val centre = MinePoint3D(
             x = (first.x + second.x + third.x) / 3f,
             y = (first.y + second.y + third.y) / 3f,
             z = (first.z + second.z + third.z) / 3f,
         )
-        val colour = surfaceColour(centre, state, tunnelSegments, gridStepMetres)
-        output.appendTriangle(first, second, third, normal, colour)
+        output.appendTriangle(
+            first,
+            second,
+            third,
+            normal,
+            surfaceColour(centre, state, tunnelSegments, gridStepMetres),
+        )
     }
 
     private fun surfaceColour(
@@ -565,31 +652,15 @@ internal object MineMeshBuilder {
         tunnelSegments: Collection<TunnelSegment>,
         gridStepMetres: Float,
     ): FloatArray {
-        val tunnelDistance = MineWorldGeometry.distanceToTunnelSegments(point, tunnelSegments)
-        val nearTunnelWall = tunnelDistance <= state.tunnel.radiusMetres + (gridStepMetres * 1.6f)
-        val oreAtWall = nearTunnelWall &&
+        val oreAtWall = state.oreBodyDiscovered &&
             MineWorldGeometry.oreMargin(point, state.oreBody) >= -(gridStepMetres * 0.75f)
-        val activeFace = state.tunnel.points.size > 1 && nearTunnelWall &&
-            MineWorldGeometry.distance(point, state.tunnel.end) <= state.tunnel.radiusMetres * 1.35f
-        val surfaceGrass = point.z <= state.bounds.minZ + 0.7f && !nearTunnelWall
-
+        val activeFace = MineWorldGeometry.distance(point, state.tunnel.end) <=
+            state.tunnel.radiusMetres * 1.35f
         return when {
-            oreAtWall -> floatArrayOf(0.72f, 0.35f, 0.94f)
+            oreAtWall -> ORE_COLOUR
             activeFace -> floatArrayOf(0.88f, 0.62f, 0.19f)
-            nearTunnelWall -> floatArrayOf(0.23f, 0.26f, 0.29f)
-            surfaceGrass -> floatArrayOf(0.20f, 0.48f, 0.22f)
-            else -> rockColour(point, state)
+            else -> TUNNEL_COLOUR
         }
-    }
-
-    private fun cutCapColour(point: MinePoint3D, state: MineWorldState): FloatArray {
-        if (state.oreBodyDiscovered && MineWorldGeometry.oreMargin(point, state.oreBody) >= 0f) {
-            return floatArrayOf(0.74f, 0.34f, 0.95f)
-        }
-        if (point.z <= state.bounds.minZ + 0.45f) {
-            return floatArrayOf(0.22f, 0.50f, 0.23f)
-        }
-        return rockColour(point, state)
     }
 
     private fun rockColour(point: MinePoint3D, state: MineWorldState): FloatArray {
@@ -599,21 +670,6 @@ internal object MineMeshBuilder {
             0.46f - (depthShade * 0.09f),
             0.43f - (depthShade * 0.07f),
         )
-    }
-
-    private fun capPoint(axis: ClipAxis, plane: Float, u: Float, v: Float): MinePoint3D = when (axis) {
-        ClipAxis.X -> MinePoint3D(plane, u, v)
-        ClipAxis.Y -> MinePoint3D(u, plane, v)
-        ClipAxis.Z -> MinePoint3D(u, v, plane)
-    }
-
-    private fun capNormal(axis: ClipAxis, flipped: Boolean): MinePoint3D {
-        val sign = if (flipped) 1f else -1f
-        return when (axis) {
-            ClipAxis.X -> MinePoint3D(sign, 0f, 0f)
-            ClipAxis.Y -> MinePoint3D(0f, sign, 0f)
-            ClipAxis.Z -> MinePoint3D(0f, 0f, sign)
-        }
     }
 
     private fun appendBox(
@@ -681,23 +737,19 @@ internal object MineMeshBuilder {
 
     private fun negate(point: MinePoint3D) = MinePoint3D(-point.x, -point.y, -point.z)
 
-    private fun cross(a: MinePoint3D, b: MinePoint3D) = MinePoint3D(
-        x = (a.y * b.z) - (a.z * b.y),
-        y = (a.z * b.x) - (a.x * b.z),
-        z = (a.x * b.y) - (a.y * b.x),
-    )
-
     private fun normalized(point: MinePoint3D): MinePoint3D {
         val length = sqrt((point.x * point.x) + (point.y * point.y) + (point.z * point.z))
         if (length < 0.0001f) return MinePoint3D(1f, 0f, 0f)
         return MinePoint3D(point.x / length, point.y / length, point.z / length)
     }
 
-    private fun triangleNormal(
-        a: MinePoint3D,
-        b: MinePoint3D,
-        c: MinePoint3D,
-    ): MinePoint3D? {
+    private fun cross(a: MinePoint3D, b: MinePoint3D) = MinePoint3D(
+        x = (a.y * b.z) - (a.z * b.y),
+        y = (a.z * b.x) - (a.x * b.z),
+        z = (a.x * b.y) - (a.y * b.x),
+    )
+
+    private fun triangleNormal(a: MinePoint3D, b: MinePoint3D, c: MinePoint3D): MinePoint3D? {
         val ux = b.x - a.x
         val uy = b.y - a.y
         val uz = b.z - a.z
@@ -712,8 +764,10 @@ internal object MineMeshBuilder {
         return MinePoint3D(nx / length, ny / length, nz / length)
     }
 
+    private fun emptyMesh() = MineMesh(FloatArray(0), 0)
+
     private class FloatAccumulator(initialCapacity: Int = 32_768) {
-        private var data = FloatArray(initialCapacity.coerceAtLeast(9))
+        private var data = FloatArray(initialCapacity.coerceAtLeast(64))
         private var size = 0
 
         fun appendTriangle(
@@ -729,7 +783,7 @@ internal object MineMeshBuilder {
         }
 
         private fun appendVertex(point: MinePoint3D, normal: MinePoint3D, colour: FloatArray) {
-            ensureCapacity(FLOATS_PER_VERTEX)
+            ensureCapacity(9)
             data[size++] = point.x
             data[size++] = point.y
             data[size++] = point.z
@@ -741,16 +795,20 @@ internal object MineMeshBuilder {
             data[size++] = colour[2]
         }
 
-        fun toMesh(): MineMesh {
-            val vertices = data.copyOf(size)
-            return MineMesh(vertices = vertices, vertexCount = vertices.size / FLOATS_PER_VERTEX)
+        private fun ensureCapacity(extra: Int) {
+            if (size + extra <= data.size) return
+            var nextSize = data.size * 2
+            while (nextSize < size + extra) nextSize *= 2
+            data = data.copyOf(nextSize)
         }
 
-        private fun ensureCapacity(additional: Int) {
-            if (size + additional <= data.size) return
-            data = data.copyOf(max(data.size * 2, size + additional))
+        fun toMesh(): MineMesh {
+            val vertices = data.copyOf(size)
+            return MineMesh(vertices = vertices, vertexCount = size / 9)
         }
     }
 
-    private const val FLOATS_PER_VERTEX = 9
+    private val ORE_COLOUR = floatArrayOf(0.72f, 0.35f, 0.94f)
+    private val TUNNEL_COLOUR = floatArrayOf(0.23f, 0.26f, 0.29f)
+    private val GRASS_COLOUR = floatArrayOf(0.20f, 0.48f, 0.22f)
 }
