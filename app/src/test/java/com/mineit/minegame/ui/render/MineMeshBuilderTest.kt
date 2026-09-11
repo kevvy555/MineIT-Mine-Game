@@ -1,9 +1,12 @@
 package com.mineit.minegame.ui.render
 
+import com.mineit.minegame.domain.ChunkExtent
 import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.abs
 
 class MineMeshBuilderTest {
     @Test
@@ -30,17 +33,56 @@ class MineMeshBuilderTest {
     }
 
     @Test
-    fun untouchedBoundaryChunkUsesCheapPlanarShell() {
-        val state = MineWorldState()
-        val mesh = MineMeshBuilder.buildChunk(
+    fun slicePlaneTracksRequestedPositionWithoutAreaSizedGrid() {
+        val state = MineWorldState().copy(
+            extent = ChunkExtent(
+                minChunkX = -8,
+                maxChunkX = 8,
+                minChunkY = -8,
+                maxChunkY = 8,
+                minChunkZ = 0,
+                maxChunkZ = 8,
+            ),
+        )
+        val fraction = 0.37f
+        val expectedPlane = MineMeshBuilder.clipValue(state, ClipAxis.X, fraction)
+        val cap = MineMeshBuilder.buildCutCap(
             state = state,
+            axis = ClipAxis.X,
+            fraction = fraction,
+            flipped = false,
+            tunnelSegments = emptyList(),
+        )
+
+        assertTrue(cap.vertexCount > 0)
+        assertTrue(cap.vertexCount < 500)
+        val firstX = cap.vertices[0]
+        assertTrue(abs(firstX - expectedPlane) < 0.10f)
+    }
+
+    @Test
+    fun globalShellCostDoesNotGrowWithChunkExtent() {
+        val small = MineMeshBuilder.buildWorldShell(MineWorldState())
+        val wide = MineMeshBuilder.buildWorldShell(
+            MineWorldState().copy(
+                extent = ChunkExtent(-10, 10, -9, 9, 0, 12),
+            ),
+        )
+
+        assertEquals(30, small.vertexCount)
+        assertEquals(small.vertexCount, wide.vertexCount)
+    }
+
+    @Test
+    fun untouchedChunkProducesNoDetailedMesh() {
+        val mesh = MineMeshBuilder.buildChunk(
+            state = MineWorldState(),
             key = ChunkKey(-1, -1, 1),
             tunnelSegments = emptyList(),
             gridStepMetres = MineMeshBuilder.ACTIVE_GRID_STEP_METRES,
         )
 
-        assertTrue(mesh.vertexCount > 0)
-        assertTrue(mesh.vertexCount <= 36)
+        assertEquals(0, mesh.vertexCount)
     }
 
     @Test
