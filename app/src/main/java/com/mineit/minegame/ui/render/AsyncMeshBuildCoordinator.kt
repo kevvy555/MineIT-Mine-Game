@@ -4,7 +4,6 @@ import com.mineit.minegame.domain.MineWorldState
 import com.mineit.minegame.domain.TunnelSegment
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 internal data class ChunkBuildRequest(
@@ -25,44 +24,18 @@ internal data class ChunkBuildResult(
     val buildMs: Float,
 )
 
-internal data class CapBuildRequest(
-    val pipelineGeneration: Long,
-    val revision: Long,
-    val state: MineWorldState,
-    val axis: ClipAxis,
-    val fraction: Float,
-    val flipped: Boolean,
-    val tunnelSegments: List<TunnelSegment>,
-)
-
-internal data class CapBuildResult(
-    val pipelineGeneration: Long,
-    val revision: Long,
-    val axis: ClipAxis,
-    val fraction: Float,
-    val flipped: Boolean,
-    val mesh: MineMesh,
-    val buildMs: Float,
-)
-
 /**
- * CPU-only mesh work stays off the GLSurfaceView render thread. Two low-priority chunk workers are
- * enough to keep the active face responsive without turning meshing into an unbounded CPU/battery
- * load. The CT cap remains isolated on its own worker so slice interaction cannot sit behind rock
- * refinement work.
+ * Only excavation meshes need asynchronous CPU polygonisation now. The world shell and CT slice
+ * are deliberately cheap, immediate meshes so they can track world growth and slider movement on
+ * the render thread without queueing behind historical geology work.
  */
 internal class AsyncMeshBuildCoordinator {
     private val chunkExecutor = Executors.newFixedThreadPool(CHUNK_WORKER_COUNT) { runnable ->
         Thread(runnable, "mineit-chunk-mesher").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
-    private val capExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "mineit-cap-mesher").apply { priority = Thread.NORM_PRIORITY - 1 }
-    }
 
     private val chunkInFlight = AtomicInteger(0)
-    private val capInFlight = AtomicBoolean(false)
     private val completedChunks = ConcurrentLinkedQueue<ChunkBuildResult>()
-    private val completedCaps = ConcurrentLinkedQueue<CapBuildResult>()
 
     fun trySubmitChunk(request: ChunkBuildRequest): Boolean {
         while (true) {
@@ -97,45 +70,11 @@ internal class AsyncMeshBuildCoordinator {
         return true
     }
 
-    fun trySubmitCap(request: CapBuildRequest): Boolean {
-        if (!capInFlight.compareAndSet(false, true)) return false
-        capExecutor.execute {
-            try {
-                val start = System.nanoTime()
-                val mesh = MineMeshBuilder.buildCutCap(
-                    state = request.state,
-                    axis = request.axis,
-                    fraction = request.fraction,
-                    flipped = request.flipped,
-                    tunnelSegments = request.tunnelSegments,
-                )
-                completedCaps.add(
-                    CapBuildResult(
-                        pipelineGeneration = request.pipelineGeneration,
-                        revision = request.revision,
-                        axis = request.axis,
-                        fraction = request.fraction,
-                        flipped = request.flipped,
-                        mesh = mesh,
-                        buildMs = nanosToMs(System.nanoTime() - start),
-                    ),
-                )
-            } finally {
-                capInFlight.set(false)
-            }
-        }
-        return true
-    }
-
     fun pollChunk(): ChunkBuildResult? = completedChunks.poll()
-
-    fun pollCap(): CapBuildResult? = completedCaps.poll()
 
     fun isChunkBusy(): Boolean = chunkInFlight.get() > 0
 
     fun availableChunkSlots(): Int = (CHUNK_WORKER_COUNT - chunkInFlight.get()).coerceAtLeast(0)
-
-    fun isCapBusy(): Boolean = capInFlight.get()
 
     private fun nanosToMs(nanos: Long): Float = nanos / 1_000_000f
 
