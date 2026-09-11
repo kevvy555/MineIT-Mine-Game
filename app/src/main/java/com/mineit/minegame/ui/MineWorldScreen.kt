@@ -200,13 +200,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.8.0",
+                    text = "MINEIT // 3D GEOLOGY 0.9.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "FAST MESH + TUNNEL VIEW",
+                    text = "INSTANT CT + GLOBAL SHELL",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -654,7 +654,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.8 fast-paths untouched solid shell chunks, compacts dense tunnel segments and uses two bounded rock workers. The queue should now follow excavation rather than world size.",
+        text = "0.9 uses one coherent world shell and an immediate analytic CT face. Detailed chunk work is now reserved for actual excavation, so world size should no longer create slice lag or boundary queues.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),
