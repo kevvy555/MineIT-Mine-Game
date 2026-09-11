@@ -27,6 +27,10 @@ class MineWorldViewModel : ViewModel() {
         mutableState.update { MineWorldController.setVerticalAngle(it, degrees) }
     }
 
+    fun setDigSpeedMultiplier(multiplier: Float) {
+        mutableState.update { MineWorldController.setDigSpeedMultiplier(it, multiplier) }
+    }
+
     fun turnHeadingBy(degrees: Float) {
         mutableState.update { MineWorldController.turnHeadingBy(it, degrees) }
     }
