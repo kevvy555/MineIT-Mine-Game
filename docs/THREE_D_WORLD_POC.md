@@ -1,122 +1,71 @@
-# 3D Geological World POC — 0.6.0
+# 3D Geological World POC — 0.7.0
 
 ## Purpose
 
-0.6 keeps the solid geological/CT interaction and focuses on two things revealed by real Pixel 7 testing:
+0.7 follows a successful real-device proof: the 0.6 custom OpenGL/async-mesh architecture held **90 FPS continuously on a Pixel 7**. The architectural question is therefore considered answered positively enough to move from basic viability toward visual fidelity and interaction quality.
 
-1. **rendering must stay responsive while excavation geometry is regenerated**;
-2. the mobile controls need to stay understandable as more view/mining tools are added.
+This pass targets five issues from device testing:
 
-The Pixel-class phone remains a deliberate performance target. The goal is not to excuse slow behaviour as old hardware; the custom 3D approach must prove it can scale before tunnel quality is increased significantly.
+1. excavation could visually stop updating while the digger continued, then catch up after STOP;
+2. tunnel walls were still visibly coarse;
+3. FOLLOW DIGGER did not move the CT slices with the machine;
+4. there was no first-person view from the mining tool;
+5. manual CT slicing could lag behind finger movement and only catch up after the slider stopped.
 
 ## Canonical ownership
 
-`domain/` remains authoritative for:
+`domain/` remains authoritative for geology, tunnel geometry, ore discovery, machine heading/slope, continuous excavation and material accounting.
 
-- X/Y/Z mine coordinates and world extent;
-- tunnel geometry;
-- ore-body geometry/discovery;
-- heading and vertical angle;
-- continuous excavation;
-- steering and fixed relative heading turns;
-- removed volume and waste tonnage.
+Camera modes, CT slice positions, follow behaviour, mesh scheduling and GPU presentation remain UI/render concerns. The renderer is never the source of truth for where the machine or tunnel actually exists.
 
-Camera following, CT clipping, diagnostics, chunk caches and background mesh jobs are renderer/UI concerns only.
+## Progressive asynchronous geometry
 
-## Control model
+0.6 correctly rejected stale asynchronous mesh results, but the policy was too strict for interactive presentation. If the digger or CT slider kept moving, a completed build could already have a newer revision queued and was therefore discarded. On a busy worker this could repeat continuously, leaving the visible geometry frozen until input stopped.
 
-The bottom interaction area is split into three mutually exclusive panels selected by persistent **CONTROL / VIEW / OTHER** buttons.
+0.7 changes the presentation rule:
 
-### CONTROL
+- a completed chunk mesh is accepted if it is newer than the revision currently shown for that chunk;
+- a later queued revision remains pending and replaces it when ready;
+- the same progressive rule is used for CT caps;
+- cap results from a different axis/side are still rejected so an old X/Y/Z section cannot replace the currently selected orientation.
 
-- stopped LEFT/RIGHT steering visibly previews the machine direction;
-- moving LEFT/RIGHT remains a turn-rate input;
-- fixed relative turns are available at **45° and 90° left/right** while stopped;
-- the vertical UP/DOWN slider remains available for arbitrary slope;
-- absolute slope presets remain UP 90, UP 45, LEVEL, DOWN 45 and DOWN 90;
-- START/STOP controls continuous excavation.
+This allows useful intermediate geometry to reach the screen instead of being thrown away while maintaining monotonic visual progress.
 
-### VIEW
+## Increased excavation quality
 
-- orbit drag and pinch zoom;
-- X/Y/Z CT slice controls;
-- OTHER SIDE and FULL/SLICE;
-- **FOLLOW DIGGER**, which targets the camera at the machine while preserving orbit and zoom;
-- reset view.
+The live geological sampling step is reduced from 2.0 m to approximately **1.6 m**. Chunks touched during an excavation run receive a **1.0 m** refinement pass after the machine stops.
 
-The zoom range is deliberately much wider than 0.5 so the player can inspect the cutter/tunnel wall closely.
+This is intentionally a modest quality increase. The aim is to measure whether the higher triangle/CPU cost remains comfortable before considering much finer walls or a different meshing algorithm.
 
-### OTHER
+## Follow camera + follow slices
 
-- diagnostics toggle;
-- reset mine;
-- compact live renderer status.
+VIEW now keeps separate slice fractions for X, Y and Z rather than sharing one slider value across all axes.
 
-## Second performance architecture pass
+When **FOLLOW + SLICES** is enabled, all three fractions are continuously derived from the authoritative digger position. The orbit camera still targets the machine as before, but changing from X to Y or Z now opens the corresponding section at the same physical location rather than returning to an unrelated old cut plane.
 
-### Background CPU meshing
+Follow slice planning is pure/tested render-state logic and does not modify the mine itself.
 
-0.5 made geology chunk-local, but scalar-field sampling and polygonisation still ran synchronously inside `onDrawFrame`. A single expensive chunk could therefore freeze camera motion even though the total amount of work was much smaller.
+## DIGGER POV
 
-0.6 moves **chunk mesh generation** to a dedicated background worker. Completed CPU meshes are returned to the OpenGL thread, where only the VBO upload/replacement occurs.
+A new camera mode places the eye just behind the cutter and points along the current machine heading and vertical slope.
 
-The CT cap has a separate background worker so moving a slice is not forced to wait behind a geological chunk build.
+The POV uses the machine's own up vector rather than global up, which keeps the camera stable even for vertical shafts where a normal world-up look-at matrix would become degenerate.
 
-Build requests include pipeline/revision IDs. If excavation changes a chunk or the slice moves while an older request is still running, the stale result is discarded rather than overwriting newer geometry.
+DIGGER POV deliberately:
 
-### Distance-throttled active excavation
-
-The domain machine still advances at 100 ms ticks, but geology is no longer remeshed every tick.
-
-New tunnel segments are immediately indexed spatially, while affected chunks accumulate in an active dirty set. An active remesh is scheduled after the cutter has advanced roughly **1.2 m** (or when world extent changes). This separates smooth machine motion from the much more expensive geological surface update.
-
-When digging stops, every chunk touched during that run receives the existing finer refinement pass.
-
-### Skip solid interior chunks
-
-A completely solid chunk inside the geological extent cannot contribute visible triangles. Such chunks are no longer sampled/meshed until excavation reaches them. Outer world faces and excavated interior chunks still generate normal meshes.
-
-This matters increasingly as the mine expands in X/Y/Z because cost now follows visible surface plus excavated workings rather than total volume.
-
-## CT cap bug fix
-
-Real-device testing exposed a directional hollow-box effect when moving a Z slice deeper from the grass surface.
-
-The cause was timing rather than geology: the OpenGL clip plane moved immediately, but a replacement solid cap took longer to generate. The previous shallower cap was clipped away by the new plane, temporarily exposing the hollow shell. Moving back upward appeared correct because the previous deeper cap remained on the kept side.
-
-0.6 keeps the last valid cap visible without applying the current clipping plane to that cap while the next asynchronous cap is generated. The replacement then swaps in atomically on the GL thread.
-
-## Diagnostics
-
-The 0.5 diagnostics listener could be detached during Compose recomposition because the lifecycle effect disposed the newly created view rather than the view captured by that effect.
-
-0.6 binds/unbinds the specific `MineSurfaceView` instance and explicitly resumes it when attached to an already-resumed lifecycle. The overlay now reports:
-
-- FPS/frame time;
-- latest background chunk build time;
-- latest background CT-cap build time;
-- GPU upload time;
-- triangle count;
-- cached chunk count;
-- pending chunk queue length;
-- mesh/cap worker BUSY/IDLE state.
-
-## Follow digger
-
-FOLLOW DIGGER changes the camera target from the full geological extent centre to the current tunnel face/machine position. It uses a fixed local framing span so the machine does not become progressively smaller simply because the mine world has expanded hundreds of metres away.
-
-The x-ray machine remains independent of follow mode and continues to render through rock and CT slices.
+- hides the third-person machine mesh;
+- ignores CT clipping and cut caps;
+- locks viewing direction to the machine rather than allowing orbit drag;
+- leaves all CT/follow state intact in the background so returning to ORBIT / CT immediately restores the geological inspection view.
 
 ## What to evaluate
 
-1. Does orbit/zoom remain smooth while the mesh worker reports BUSY?
-2. Does continuous digging feel smoother even if the actual tunnel wall catches up in ~1 m steps?
-3. Do diagnostics now show realistic FPS/build/queue values on device?
-4. Does Z slicing stay visually solid in both drag directions?
-5. Is the larger zoom range enough to inspect the cutter and wall closely?
-6. Is FOLLOW DIGGER useful without becoming disorienting?
-7. Are fixed 45°/90° horizontal turns useful for deliberate mine layouts?
-8. Does the three-panel control layout leave enough viewport space while keeping all important actions obvious?
+1. Does the visible tunnel now continue advancing while continuous digging remains active, rather than freezing until STOP?
+2. Is the 1.6 m live / 1.0 m refined geometry noticeably smoother without compromising the established 90 FPS rendering result?
+3. Does FOLLOW + SLICES keep X/Y/Z sections usefully centred around the digger during shafts, level drives and turns?
+4. Does DIGGER POV feel spatially correct at level, 45° and vertical headings?
+5. Do CT caps move progressively enough during fast manual slider movement, and how large is the remaining CPU cap-build latency?
+6. With the new quality, do mesh queue depth/build times remain bounded during long excavation runs?
 
 ## Still deliberately excluded
 
