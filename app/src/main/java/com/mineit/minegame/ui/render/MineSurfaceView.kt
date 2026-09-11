@@ -10,13 +10,13 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
     private val mineRenderer = MineWorldGlRenderer()
     private var lastX = 0f
     private var lastY = 0f
+    private var performanceListener: ((RenderPerformanceStats) -> Unit)? = null
 
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 mineRenderer.zoom(detector.scaleFactor)
-                requestRender()
                 return true
             }
         },
@@ -27,22 +27,28 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         setEGLConfigChooser(8, 8, 8, 8, 16, 0)
         preserveEGLContextOnPause = true
         setRenderer(mineRenderer)
-        renderMode = RENDERMODE_WHEN_DIRTY
+        // Continuous mode is deliberate for this performance POC: it gives a real FPS signal on
+        // device and keeps camera/x-ray presentation smooth while chunk remeshing is measured.
+        renderMode = RENDERMODE_CONTINUOUSLY
+        mineRenderer.setPerformanceListener { stats ->
+            post { performanceListener?.invoke(stats) }
+        }
     }
 
     fun setWorldState(state: MineWorldState) {
         mineRenderer.setWorldState(state)
-        requestRender()
     }
 
     fun setClip(axis: ClipAxis, fraction: Float, flipped: Boolean, enabled: Boolean) {
         mineRenderer.setClip(axis, fraction, flipped, enabled)
-        requestRender()
+    }
+
+    fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
+        performanceListener = listener
     }
 
     fun resetCamera() {
         mineRenderer.resetCamera()
-        requestRender()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -59,7 +65,6 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
                     val dx = event.x - lastX
                     val dy = event.y - lastY
                     mineRenderer.rotate(dx, dy)
-                    requestRender()
                 }
                 lastX = event.x
                 lastY = event.y
