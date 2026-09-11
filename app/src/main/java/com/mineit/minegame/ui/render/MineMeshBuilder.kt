@@ -4,8 +4,11 @@ import com.mineit.minegame.domain.MinePoint3D
 import com.mineit.minegame.domain.MineWorldGeometry
 import com.mineit.minegame.domain.MineWorldState
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 data class MineMesh(
@@ -15,7 +18,9 @@ data class MineMesh(
 
 object MineMeshBuilder {
     private const val GRID_STEP_METRES = 2f
+    private const val CUT_CAP_STEP_METRES = 0.9f
     private const val NORMAL_SAMPLE_METRES = 0.45f
+    private const val CUT_CAP_EPSILON_METRES = 0.03f
 
     private val tetrahedra = arrayOf(
         intArrayOf(0, 5, 1, 6),
@@ -95,11 +100,128 @@ object MineMeshBuilder {
             }
         }
 
-        val vertices = output.toArray()
-        return MineMesh(
-            vertices = vertices,
-            vertexCount = vertices.size / FLOATS_PER_VERTEX,
+        return output.toMesh()
+    }
+
+    fun buildCutCap(
+        state: MineWorldState,
+        axis: ClipAxis,
+        fraction: Float,
+        flipped: Boolean,
+    ): MineMesh {
+        val bounds = state.bounds
+        val clipValue = when (axis) {
+            ClipAxis.X -> bounds.minX + (bounds.width * fraction)
+            ClipAxis.Y -> bounds.minY + (bounds.height * fraction)
+            ClipAxis.Z -> bounds.minZ + (bounds.depth * fraction)
+        }
+        val keptDirection = if (flipped) -1f else 1f
+        val plane = clipValue + (keptDirection * CUT_CAP_EPSILON_METRES)
+        val output = FloatAccumulator(16_384)
+
+        val uMin: Float
+        val uMax: Float
+        val vMin: Float
+        val vMax: Float
+        when (axis) {
+            ClipAxis.X -> {
+                uMin = bounds.minY
+                uMax = bounds.maxY
+                vMin = bounds.minZ
+                vMax = bounds.maxZ
+            }
+            ClipAxis.Y -> {
+                uMin = bounds.minX
+                uMax = bounds.maxX
+                vMin = bounds.minZ
+                vMax = bounds.maxZ
+            }
+            ClipAxis.Z -> {
+                uMin = bounds.minX
+                uMax = bounds.maxX
+                vMin = bounds.minY
+                vMax = bounds.maxY
+            }
+        }
+
+        val uCells = ceil((uMax - uMin) / CUT_CAP_STEP_METRES).toInt().coerceAtLeast(1)
+        val vCells = ceil((vMax - vMin) / CUT_CAP_STEP_METRES).toInt().coerceAtLeast(1)
+
+        for (vIndex in 0 until vCells) {
+            val v0 = vMin + (vIndex * CUT_CAP_STEP_METRES)
+            val v1 = minOf(v0 + CUT_CAP_STEP_METRES, vMax)
+            for (uIndex in 0 until uCells) {
+                val u0 = uMin + (uIndex * CUT_CAP_STEP_METRES)
+                val u1 = minOf(u0 + CUT_CAP_STEP_METRES, uMax)
+                val centre = capPoint(axis, plane, (u0 + u1) * 0.5f, (v0 + v1) * 0.5f)
+                if (MineWorldGeometry.solidMargin(centre, bounds, state.tunnel) <= 0f) continue
+
+                val colour = cutCapColour(centre, state)
+                val normal = capNormal(axis, flipped)
+                val p00 = capPoint(axis, plane, u0, v0)
+                val p10 = capPoint(axis, plane, u1, v0)
+                val p11 = capPoint(axis, plane, u1, v1)
+                val p01 = capPoint(axis, plane, u0, v1)
+
+                output.appendTriangle(p00, p10, p11, normal, colour)
+                output.appendTriangle(p00, p11, p01, normal, colour)
+            }
+        }
+
+        return output.toMesh()
+    }
+
+    fun buildMachine(state: MineWorldState): MineMesh {
+        val heading = Math.toRadians(state.headingDegrees.toDouble())
+        val angle = Math.toRadians(state.verticalAngleDegrees.toDouble())
+        val cosAngle = cos(angle).toFloat()
+        val forward = MinePoint3D(
+            x = cos(heading).toFloat() * cosAngle,
+            y = sin(heading).toFloat() * cosAngle,
+            z = sin(angle).toFloat(),
         )
+        val right = MinePoint3D(
+            x = -sin(heading).toFloat(),
+            y = cos(heading).toFloat(),
+            z = 0f,
+        )
+        val up = MinePoint3D(
+            x = cos(heading).toFloat() * sin(angle).toFloat(),
+            y = sin(heading).toFloat() * sin(angle).toFloat(),
+            z = -cosAngle,
+        )
+
+        val nose = state.tunnel.end
+        val output = FloatAccumulator(256)
+        val bodyCentre = combine(
+            nose,
+            forward to -2.2f,
+            up to 0.15f,
+        )
+        appendBox(
+            output = output,
+            centre = bodyCentre,
+            forward = forward,
+            right = right,
+            up = up,
+            halfLength = 2.7f,
+            halfWidth = 1.55f,
+            halfHeight = 1.1f,
+            colour = floatArrayOf(0.86f, 0.48f, 0.10f),
+        )
+        val cutterCentre = combine(nose, forward to -0.15f)
+        appendBox(
+            output = output,
+            centre = cutterCentre,
+            forward = forward,
+            right = right,
+            up = up,
+            halfLength = 0.38f,
+            halfWidth = 1.8f,
+            halfHeight = 1.3f,
+            colour = floatArrayOf(0.92f, 0.66f, 0.16f),
+        )
+        return output.toMesh()
     }
 
     private fun polygoniseTetrahedron(
@@ -196,9 +318,7 @@ object MineMeshBuilder {
         }
 
         val colour = surfaceColour(centre, state)
-        output.appendVertex(a, normal, colour)
-        output.appendVertex(b, normal, colour)
-        output.appendVertex(c, normal, colour)
+        output.appendTriangle(a, b, c, normal, colour)
     }
 
     private fun surfaceColour(point: MinePoint3D, state: MineWorldState): FloatArray {
@@ -206,23 +326,117 @@ object MineMeshBuilder {
         val nearTunnelWall = tunnelDistance <= state.tunnel.radiusMetres + (GRID_STEP_METRES * 1.6f)
         val oreAtWall = nearTunnelWall &&
             MineWorldGeometry.oreMargin(point, state.oreBody) >= -(GRID_STEP_METRES * 0.75f)
-        val activeFace = nearTunnelWall &&
+        val activeFace = state.tunnel.points.size > 1 && nearTunnelWall &&
             MineWorldGeometry.distance(point, state.tunnel.end) <= state.tunnel.radiusMetres * 1.35f
+        val surfaceGrass = point.z <= state.bounds.minZ + 0.7f && !nearTunnelWall
 
         return when {
             oreAtWall -> floatArrayOf(0.72f, 0.35f, 0.94f)
-            activeFace -> floatArrayOf(0.86f, 0.64f, 0.24f)
-            nearTunnelWall -> floatArrayOf(0.25f, 0.28f, 0.31f)
-            else -> {
-                val depthShade = (point.z / max(1f, state.bounds.maxZ)).coerceIn(0f, 1f)
-                floatArrayOf(
-                    0.48f - (depthShade * 0.08f),
-                    0.50f - (depthShade * 0.08f),
-                    0.53f - (depthShade * 0.07f),
-                )
-            }
+            activeFace -> floatArrayOf(0.88f, 0.62f, 0.19f)
+            nearTunnelWall -> floatArrayOf(0.23f, 0.26f, 0.29f)
+            surfaceGrass -> floatArrayOf(0.20f, 0.48f, 0.22f)
+            else -> rockColour(point, state)
         }
     }
+
+    private fun cutCapColour(point: MinePoint3D, state: MineWorldState): FloatArray {
+        if (state.oreBodyDiscovered && MineWorldGeometry.oreMargin(point, state.oreBody) >= 0f) {
+            return floatArrayOf(0.74f, 0.34f, 0.95f)
+        }
+        if (point.z <= state.bounds.minZ + 0.45f) {
+            return floatArrayOf(0.22f, 0.50f, 0.23f)
+        }
+        return rockColour(point, state)
+    }
+
+    private fun rockColour(point: MinePoint3D, state: MineWorldState): FloatArray {
+        val depthShade = (point.z / max(1f, state.bounds.maxZ)).coerceIn(0f, 1f)
+        return floatArrayOf(
+            0.48f - (depthShade * 0.10f),
+            0.46f - (depthShade * 0.09f),
+            0.43f - (depthShade * 0.07f),
+        )
+    }
+
+    private fun capPoint(axis: ClipAxis, plane: Float, u: Float, v: Float): MinePoint3D = when (axis) {
+        ClipAxis.X -> MinePoint3D(plane, u, v)
+        ClipAxis.Y -> MinePoint3D(u, plane, v)
+        ClipAxis.Z -> MinePoint3D(u, v, plane)
+    }
+
+    private fun capNormal(axis: ClipAxis, flipped: Boolean): MinePoint3D {
+        val sign = if (flipped) 1f else -1f
+        return when (axis) {
+            ClipAxis.X -> MinePoint3D(sign, 0f, 0f)
+            ClipAxis.Y -> MinePoint3D(0f, sign, 0f)
+            ClipAxis.Z -> MinePoint3D(0f, 0f, sign)
+        }
+    }
+
+    private fun appendBox(
+        output: FloatAccumulator,
+        centre: MinePoint3D,
+        forward: MinePoint3D,
+        right: MinePoint3D,
+        up: MinePoint3D,
+        halfLength: Float,
+        halfWidth: Float,
+        halfHeight: Float,
+        colour: FloatArray,
+    ) {
+        fun corner(f: Float, r: Float, u: Float): MinePoint3D = combine(
+            centre,
+            forward to (f * halfLength),
+            right to (r * halfWidth),
+            up to (u * halfHeight),
+        )
+
+        val p000 = corner(-1f, -1f, -1f)
+        val p001 = corner(-1f, -1f, 1f)
+        val p010 = corner(-1f, 1f, -1f)
+        val p011 = corner(-1f, 1f, 1f)
+        val p100 = corner(1f, -1f, -1f)
+        val p101 = corner(1f, -1f, 1f)
+        val p110 = corner(1f, 1f, -1f)
+        val p111 = corner(1f, 1f, 1f)
+
+        appendQuad(output, p100, p110, p111, p101, forward, colour)
+        appendQuad(output, p010, p000, p001, p011, negate(forward), colour)
+        appendQuad(output, p110, p010, p011, p111, right, colour)
+        appendQuad(output, p000, p100, p101, p001, negate(right), colour)
+        appendQuad(output, p101, p111, p011, p001, up, colour)
+        appendQuad(output, p000, p010, p110, p100, negate(up), colour)
+    }
+
+    private fun appendQuad(
+        output: FloatAccumulator,
+        a: MinePoint3D,
+        b: MinePoint3D,
+        c: MinePoint3D,
+        d: MinePoint3D,
+        normal: MinePoint3D,
+        colour: FloatArray,
+    ) {
+        output.appendTriangle(a, b, c, normal, colour)
+        output.appendTriangle(a, c, d, normal, colour)
+    }
+
+    private fun combine(
+        origin: MinePoint3D,
+        vararg terms: Pair<MinePoint3D, Float>,
+    ): MinePoint3D {
+        var x = origin.x
+        var y = origin.y
+        var z = origin.z
+        terms.forEach { (direction, scale) ->
+            x += direction.x * scale
+            y += direction.y * scale
+            z += direction.z * scale
+        }
+        return MinePoint3D(x, y, z)
+    }
+
+    private fun negate(point: MinePoint3D) = MinePoint3D(-point.x, -point.y, -point.z)
 
     private fun triangleNormal(
         a: MinePoint3D,
@@ -253,7 +467,19 @@ object MineMeshBuilder {
         private var data = FloatArray(initialCapacity)
         private var size = 0
 
-        fun appendVertex(point: MinePoint3D, normal: MinePoint3D, colour: FloatArray) {
+        fun appendTriangle(
+            a: MinePoint3D,
+            b: MinePoint3D,
+            c: MinePoint3D,
+            normal: MinePoint3D,
+            colour: FloatArray,
+        ) {
+            appendVertex(a, normal, colour)
+            appendVertex(b, normal, colour)
+            appendVertex(c, normal, colour)
+        }
+
+        private fun appendVertex(point: MinePoint3D, normal: MinePoint3D, colour: FloatArray) {
             ensureCapacity(FLOATS_PER_VERTEX)
             data[size++] = point.x
             data[size++] = point.y
@@ -266,7 +492,10 @@ object MineMeshBuilder {
             data[size++] = colour[2]
         }
 
-        fun toArray(): FloatArray = data.copyOf(size)
+        fun toMesh(): MineMesh {
+            val vertices = data.copyOf(size)
+            return MineMesh(vertices = vertices, vertexCount = vertices.size / FLOATS_PER_VERTEX)
+        }
 
         private fun ensureCapacity(additional: Int) {
             if (size + additional <= data.size) return

@@ -2,11 +2,15 @@ package com.mineit.minegame.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -22,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -35,6 +40,7 @@ import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
 import com.mineit.minegame.ui.render.ClipAxis
 import com.mineit.minegame.ui.render.MineSurfaceView
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Composable
@@ -67,7 +73,8 @@ fun MineWorldScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF11161D)),
+            .background(Color(0xFF11161D))
+            .statusBarsPadding(),
     ) {
         MineWorldHeader(state)
 
@@ -98,9 +105,9 @@ fun MineWorldScreen(
             onClipFractionChange = { clipFraction = it },
             onFlipClip = { clipFlipped = !clipFlipped },
             onToggleClip = { clipEnabled = !clipEnabled },
-            onAzimuthChange = viewModel::setAzimuth,
-            onDipChange = viewModel::setDip,
-            onDig = viewModel::dig,
+            onSteeringChange = viewModel::setSteering,
+            onVerticalAngleChange = viewModel::setVerticalAngle,
+            onToggleDigging = viewModel::toggleDigging,
             onResetView = { surfaceView?.resetCamera() },
             onResetMine = viewModel::reset,
         )
@@ -112,7 +119,7 @@ private fun MineWorldHeader(state: MineWorldState) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -121,21 +128,22 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.3.0",
+                    text = "MINEIT // 3D GEOLOGY 0.4.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "CUSTOM VOLUME + OPENGL POC",
+                    text = "SOLID CT MINE + CONTINUOUS DIGGING",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
             }
             Text(
-                text = "${state.extent.chunkCount} chunks",
-                color = Color(0xFFB5BEC8),
+                text = if (state.isDigging) "DIGGING" else "STOPPED",
+                color = if (state.isDigging) Color(0xFFFFC857) else Color(0xFFB5BEC8),
                 style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
             )
         }
 
@@ -145,10 +153,10 @@ private fun MineWorldHeader(state: MineWorldState) {
                 .padding(top = 5.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            HeaderStat("DEPTH", "${state.tunnel.end.z.roundToInt()}m")
+            HeaderStat("DEPTH", "${state.depthMetres.roundToInt()}m")
             HeaderStat("REMOVED", "${state.excavatedVolumeCubicMetres.roundToInt()}m³")
             HeaderStat("WASTE", "${state.wasteRockTonnes.roundToInt()}t")
-            HeaderStat("ORE", "${state.exposedOreSegments.size} exposed")
+            HeaderStat("ORE", if (state.oreBodyDiscovered) "FOUND" else "HIDDEN")
         }
     }
 }
@@ -181,9 +189,9 @@ private fun MineWorldControls(
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
-    onAzimuthChange: (Float) -> Unit,
-    onDipChange: (Float) -> Unit,
-    onDig: () -> Unit,
+    onSteeringChange: (Float) -> Unit,
+    onVerticalAngleChange: (Float) -> Unit,
+    onToggleDigging: () -> Unit,
     onResetView: () -> Unit,
     onResetMine: () -> Unit,
 ) {
@@ -194,7 +202,7 @@ private fun MineWorldControls(
                 color = Color(0xFF20262D),
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
             )
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -210,9 +218,9 @@ private fun MineWorldControls(
             }
             OutlinedButton(
                 onClick = onToggleClip,
-                modifier = Modifier.weight(1.15f),
+                modifier = Modifier.weight(1.2f),
             ) {
-                Text(if (clipEnabled) "CUT ON" else "FULL")
+                Text(if (clipEnabled) "SLICE ON" else "FULL")
             }
         }
 
@@ -227,7 +235,7 @@ private fun MineWorldControls(
                 modifier = Modifier.weight(1f),
             )
             OutlinedButton(onClick = onFlipClip) {
-                Text(if (clipFlipped) "CUT −" else "CUT +")
+                Text("OTHER SIDE")
             }
         }
         Slider(
@@ -236,45 +244,126 @@ private fun MineWorldControls(
             valueRange = 0.02f..0.98f,
         )
 
-        SteeringSlider(
-            label = "AZIMUTH",
-            valueLabel = "${state.azimuthDegrees.roundToInt()}°",
-            value = state.azimuthDegrees,
-            valueRange = 0f..360f,
-            onValueChange = onAzimuthChange,
-        )
-        SteeringSlider(
-            label = "DIP",
-            valueLabel = "${state.dipDegrees.roundToInt()}°",
-            value = state.dipDegrees,
-            valueRange = MineWorldController.MIN_DIP_DEGREES..MineWorldController.MAX_DIP_DEGREES,
-            onValueChange = onDipChange,
-        )
-
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(
-                onClick = onDig,
-                modifier = Modifier.weight(1.55f),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB7791F)),
-            ) {
-                Text("DIG +${MineWorldController.DIG_STEP_METRES.toInt()}m")
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "STEER",
+                    color = Color(0xFFB5BEC8),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "LEFT",
+                        color = Color(0xFF9AA4B2),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.width(34.dp),
+                    )
+                    Slider(
+                        value = state.steering,
+                        onValueChange = onSteeringChange,
+                        valueRange = MineWorldController.MIN_STEERING..MineWorldController.MAX_STEERING,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "RIGHT",
+                        color = Color(0xFF9AA4B2),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.width(40.dp),
+                    )
+                }
+                Text(
+                    text = steeringDescription(state.steering),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+
+                Button(
+                    onClick = onToggleDigging,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 7.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (state.isDigging) Color(0xFF8C3F3F) else Color(0xFFB7791F),
+                    ),
+                ) {
+                    Text(if (state.isDigging) "STOP" else "START DIGGING")
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
+                        Text("RESET VIEW")
+                    }
+                    OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
+                        Text("RESET MINE")
+                    }
+                }
             }
-            OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
-                Text("VIEW")
-            }
-            OutlinedButton(onClick = onResetMine, modifier = Modifier.weight(1f)) {
-                Text("RESET")
-            }
+
+            VerticalAngleControl(
+                value = state.verticalAngleDegrees,
+                onValueChange = onVerticalAngleChange,
+            )
         }
 
         Text(
-            text = "Drag = rotate • pinch = zoom • purple = ore exposed on a real tunnel wall. The volume expands as excavation reaches an edge.",
+            text = "Drag = rotate • pinch = zoom • X/Y/Z slices cut through solid rock like a CT scan. Once ore is hit, its connected vein becomes visible in slices.",
             color = Color(0xFF8D98A5),
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(top = 5.dp),
+        )
+    }
+}
+
+@Composable
+private fun VerticalAngleControl(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+) {
+    Column(
+        modifier = Modifier.width(92.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = "ANGLE",
+            color = Color(0xFFB5BEC8),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+        )
+        Text("UP", color = Color(0xFF9AA4B2), style = MaterialTheme.typography.labelSmall)
+        Box(
+            modifier = Modifier
+                .width(86.dp)
+                .height(116.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Slider(
+                value = value,
+                onValueChange = onValueChange,
+                valueRange = MineWorldController.MIN_VERTICAL_ANGLE_DEGREES..MineWorldController.MAX_VERTICAL_ANGLE_DEGREES,
+                modifier = Modifier
+                    .width(116.dp)
+                    .rotate(90f),
+            )
+        }
+        Text("DOWN", color = Color(0xFF9AA4B2), style = MaterialTheme.typography.labelSmall)
+        Text(
+            text = angleDescription(value),
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
         )
     }
 }
@@ -301,37 +390,16 @@ private fun AxisButton(
     }
 }
 
-@Composable
-private fun SteeringSlider(
-    label: String,
-    valueLabel: String,
-    value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            color = Color(0xFFB5BEC8),
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.weight(0.9f),
-        )
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            modifier = Modifier.weight(3.5f),
-        )
-        Text(
-            text = valueLabel,
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.weight(0.8f),
-        )
-    }
+private fun steeringDescription(value: Float): String = when {
+    abs(value) < 0.05f -> "STRAIGHT"
+    value < 0f -> "TURN LEFT ${(abs(value) * 100f).roundToInt()}%"
+    else -> "TURN RIGHT ${(value * 100f).roundToInt()}%"
+}
+
+private fun angleDescription(value: Float): String = when {
+    abs(value) < 2f -> "LEVEL"
+    value < 0f -> "${abs(value).roundToInt()}° UP"
+    else -> "${value.roundToInt()}° DOWN"
 }
 
 private fun clipValue(state: MineWorldState, axis: ClipAxis, fraction: Float): Float = when (axis) {

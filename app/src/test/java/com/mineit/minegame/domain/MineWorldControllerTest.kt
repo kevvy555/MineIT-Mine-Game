@@ -1,89 +1,130 @@
 package com.mineit.minegame.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MineWorldControllerTest {
     @Test
-    fun diggingAddsAThreeDimensionalTunnelSegmentAndWasteRock() {
-        val initial = MineWorldState()
-        val dug = MineWorldController.dig(initial)
+    fun mineStartsAtSurfaceWithSolidRockAndHiddenOre() {
+        val state = MineWorldState()
 
-        assertEquals(initial.tunnel.points.size + 1, dug.tunnel.points.size)
-        assertTrue(dug.excavatedVolumeCubicMetres > initial.excavatedVolumeCubicMetres)
-        assertTrue(dug.wasteRockTonnes > initial.wasteRockTonnes)
+        assertEquals(1, state.tunnel.points.size)
+        assertEquals(0f, state.excavatedVolumeCubicMetres, 0.001f)
+        assertFalse(state.oreBodyDiscovered)
+        assertTrue(MineWorldGeometry.solidMargin(MinePoint3D(0f, 0f, 4f), state.bounds, state.tunnel) > 0f)
     }
 
     @Test
-    fun azimuthAndDipControlAllThreeAxes() {
-        val initial = MineWorldController.setDip(
-            MineWorldController.setAzimuth(MineWorldState(), 90f),
-            30f,
-        )
-        val start = initial.tunnel.end
-        val dug = MineWorldController.dig(initial)
-        val end = dug.tunnel.end
+    fun startAndTickCreateThreeDimensionalExcavationAndWaste() {
+        val started = MineWorldController.startDigging(MineWorldState())
+        val dug = MineWorldController.tick(started, 0.25f)
 
-        assertTrue(kotlin.math.abs(end.x - start.x) < 0.05f)
-        assertTrue(end.y > start.y)
-        assertTrue(end.z > start.z)
+        assertTrue(started.isDigging)
+        assertEquals(2, dug.tunnel.points.size)
+        assertTrue(dug.tunnel.end.z > 0f)
+        assertTrue(dug.excavatedVolumeCubicMetres > 0f)
+        assertTrue(dug.wasteRockTonnes > 0f)
     }
 
     @Test
-    fun worldExtentExpandsWhenExcavationApproachesAnEdge() {
-        var state = MineWorldController.setDip(
-            MineWorldController.setAzimuth(MineWorldState(), 0f),
-            0f,
-        )
+    fun steeringCurvesHeadingWhileMachineMoves() {
+        var state = MineWorldController.setSteering(MineWorldState(), 1f)
+        state = MineWorldController.startDigging(state)
+        val startHeading = state.headingDegrees
+
+        repeat(4) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        assertTrue(state.headingDegrees > startHeading)
+        assertTrue(state.tunnel.end.x > 0f)
+        assertTrue(state.tunnel.end.y > 0f)
+    }
+
+    @Test
+    fun verticalAngleCanDriveDownAndBackTowardSurface() {
+        var state = MineWorldController.startDigging(MineWorldState())
+        repeat(12) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+        val deepPoint = state.tunnel.end
+
+        state = MineWorldController.setVerticalAngle(state, -60f)
+        repeat(30) {
+            state = MineWorldController.tick(state, 0.25f)
+            if (!state.isDigging) return@repeat
+        }
+
+        assertTrue(deepPoint.z > 0f)
+        assertTrue(state.tunnel.end.z >= 0f)
+        assertFalse(state.isDigging)
+    }
+
+    @Test
+    fun surfaceMachineCannotStartLevelOrUpward() {
+        val level = MineWorldController.setVerticalAngle(MineWorldState(), 0f)
+        val upward = MineWorldController.setVerticalAngle(MineWorldState(), -20f)
+
+        assertFalse(MineWorldController.startDigging(level).isDigging)
+        assertFalse(MineWorldController.startDigging(upward).isDigging)
+    }
+
+    @Test
+    fun worldExtentExpandsWhenContinuousExcavationApproachesEdge() {
+        var state = MineWorldController.setVerticalAngle(MineWorldState(), 10f)
+        state = MineWorldController.startDigging(state)
         val initialMaxX = state.extent.maxChunkX
 
-        repeat(3) {
-            state = MineWorldController.dig(state)
+        repeat(35) {
+            state = MineWorldController.tick(state, 0.25f)
         }
 
         assertTrue(state.extent.maxChunkX > initialMaxX)
-        assertTrue(state.bounds.maxX > 24f)
     }
 
     @Test
-    fun upwardDiggingCannotMoveTunnelCentreAboveTheSurface() {
-        var state = MineWorldController.setDip(MineWorldState(), -70f)
+    fun touchingOreDiscoversTheConnectedBody() {
+        var state = MineWorldController.startDigging(MineWorldState())
 
-        repeat(8) {
-            state = MineWorldController.dig(state)
+        repeat(45) {
+            state = MineWorldController.tick(state, 0.25f)
         }
 
-        val minimumAllowedDepth = state.tunnel.radiusMetres * 0.65f
-        assertTrue(state.tunnel.points.all { it.z >= 0f })
-        assertTrue(state.tunnel.end.z >= minimumAllowedDepth - 0.01f)
-    }
-
-    @Test
-    fun initialShaftDiscoversOnlyOreItActuallyExposes() {
-        val state = MineWorldState()
-
         assertTrue(state.exposedOreSegments.isNotEmpty())
-
-        val remoteTunnel = TunnelGeometry(
-            points = listOf(
-                MinePoint3D(-20f, -20f, 0f),
-                MinePoint3D(-20f, -20f, 20f),
-            ),
-            radiusMetres = 2f,
-        )
-        val exposures = MineWorldGeometry.exposedOreSegments(remoteTunnel, state.oreBody)
-
-        assertTrue(exposures.isEmpty())
+        assertTrue(state.oreBodyDiscovered)
     }
 
     @Test
-    fun solidFieldTreatsTunnelAsAirInsideRockVolume() {
-        val state = MineWorldState()
-        val insideRock = MinePoint3D(12f, -12f, 20f)
-        val insideShaft = MinePoint3D(0f, 0f, 12f)
+    fun discoveredOreRemainsKnownAfterFurtherDigging() {
+        var state = MineWorldController.startDigging(MineWorldState())
+        repeat(45) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+        assertTrue(state.oreBodyDiscovered)
 
-        assertTrue(MineWorldGeometry.solidMargin(insideRock, state.bounds, state.tunnel) > 0f)
-        assertTrue(MineWorldGeometry.solidMargin(insideShaft, state.bounds, state.tunnel) < 0f)
+        state = MineWorldController.setSteering(state, -1f)
+        repeat(12) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        assertTrue(state.oreBodyDiscovered)
+    }
+
+    @Test
+    fun excavatedTunnelBecomesAirInsideRockVolume() {
+        var state = MineWorldController.startDigging(MineWorldState())
+        repeat(6) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+        val tunnelPoint = MineWorldGeometry.interpolate(
+            state.tunnel.points[1],
+            state.tunnel.points[2],
+            0.5f,
+        )
+
+        assertTrue(MineWorldGeometry.solidMargin(tunnelPoint, state.bounds, state.tunnel) < 0f)
+        assertTrue(MineWorldGeometry.solidMargin(MinePoint3D(-12f, -12f, 12f), state.bounds, state.tunnel) > 0f)
     }
 }

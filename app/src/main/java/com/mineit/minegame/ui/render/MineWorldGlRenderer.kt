@@ -23,6 +23,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var meshDirty = true
 
     @Volatile
+    private var capDirty = true
+
+    @Volatile
+    private var machineDirty = true
+
+    @Volatile
     private var clipAxis = ClipAxis.Z
 
     @Volatile
@@ -46,8 +52,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var surfaceWidth = 1
     private var surfaceHeight = 1
     private var program = 0
-    private var vertexBuffer: FloatBuffer? = null
-    private var vertexCount = 0
+
+    private var rockBuffer: FloatBuffer? = null
+    private var rockVertexCount = 0
+    private var capBuffer: FloatBuffer? = null
+    private var capVertexCount = 0
+    private var machineBuffer: FloatBuffer? = null
+    private var machineVertexCount = 0
 
     private val modelMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -56,16 +67,33 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private val mvpMatrix = FloatArray(16)
 
     fun setWorldState(state: MineWorldState) {
-        val geometryChanged = state.tunnel != worldState.tunnel ||
-            state.extent != worldState.extent ||
-            state.oreBody != worldState.oreBody
+        val previous = worldState
+        val geometryChanged = state.tunnel != previous.tunnel ||
+            state.extent != previous.extent ||
+            state.oreBody != previous.oreBody
+        val oreDiscoveryChanged = state.oreBodyDiscovered != previous.oreBodyDiscovered
+        val machineChanged = state.tunnel.end != previous.tunnel.end ||
+            state.headingDegrees != previous.headingDegrees ||
+            state.verticalAngleDegrees != previous.verticalAngleDegrees
+
         worldState = state
         if (geometryChanged) meshDirty = true
+        if (geometryChanged || oreDiscoveryChanged) capDirty = true
+        if (geometryChanged || machineChanged) machineDirty = true
     }
 
     fun setClip(axis: ClipAxis, fraction: Float, flipped: Boolean, enabled: Boolean) {
+        val boundedFraction = fraction.coerceIn(0f, 1f)
+        if (
+            axis != clipAxis ||
+            boundedFraction != clipFraction ||
+            flipped != clipFlipped ||
+            enabled != clipEnabled
+        ) {
+            capDirty = true
+        }
         clipAxis = axis
-        clipFraction = fraction.coerceIn(0f, 1f)
+        clipFraction = boundedFraction
         clipFlipped = flipped
         clipEnabled = enabled
     }
@@ -93,6 +121,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         configureDomainToOpenGlMatrix()
         meshDirty = true
+        capDirty = true
+        machineDirty = true
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -104,20 +134,54 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         val state = worldState
         if (meshDirty) {
-            uploadMesh(MineMeshBuilder.build(state))
+            val mesh = MineMeshBuilder.build(state)
+            rockBuffer = createBuffer(mesh)
+            rockVertexCount = mesh.vertexCount
             meshDirty = false
+        }
+        if (capDirty) {
+            if (clipEnabled) {
+                val cap = MineMeshBuilder.buildCutCap(
+                    state = state,
+                    axis = clipAxis,
+                    fraction = clipFraction,
+                    flipped = clipFlipped,
+                )
+                capBuffer = createBuffer(cap)
+                capVertexCount = cap.vertexCount
+            } else {
+                capBuffer = null
+                capVertexCount = 0
+            }
+            capDirty = false
+        }
+        if (machineDirty) {
+            val machine = MineMeshBuilder.buildMachine(state)
+            machineBuffer = createBuffer(machine)
+            machineVertexCount = machine.vertexCount
+            machineDirty = false
         }
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
-        if (vertexCount == 0 || program == 0) return
+        if (program == 0) return
 
         updateMatrices(state)
         GLES20.glUseProgram(program)
 
-        val mvpLocation = GLES20.glGetUniformLocation(program, "uMvp")
-        val modelLocation = GLES20.glGetUniformLocation(program, "uModel")
-        GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvpMatrix, 0)
-        GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
+        GLES20.glUniformMatrix4fv(
+            GLES20.glGetUniformLocation(program, "uMvp"),
+            1,
+            false,
+            mvpMatrix,
+            0,
+        )
+        GLES20.glUniformMatrix4fv(
+            GLES20.glGetUniformLocation(program, "uModel"),
+            1,
+            false,
+            modelMatrix,
+            0,
+        )
 
         val bounds = state.bounds
         val clipValue = when (clipAxis) {
@@ -136,7 +200,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             if (clipEnabled) 1f else 0f,
         )
 
-        val buffer = vertexBuffer ?: return
+        drawMesh(rockBuffer, rockVertexCount)
+        drawMesh(capBuffer, capVertexCount)
+        drawMesh(machineBuffer, machineVertexCount)
+    }
+
+    private fun drawMesh(buffer: FloatBuffer?, vertexCount: Int) {
+        if (buffer == null || vertexCount <= 0) return
         val strideBytes = FLOATS_PER_VERTEX * Float.SIZE_BYTES
 
         val positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
@@ -161,9 +231,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         GLES20.glDisableVertexAttribArray(colourLocation)
     }
 
-    private fun uploadMesh(mesh: MineMesh) {
-        vertexCount = mesh.vertexCount
-        vertexBuffer = ByteBuffer
+    private fun createBuffer(mesh: MineMesh): FloatBuffer? {
+        if (mesh.vertices.isEmpty()) return null
+        return ByteBuffer
             .allocateDirect(mesh.vertices.size * Float.SIZE_BYTES)
             .order(ByteOrder.nativeOrder())
             .asFloatBuffer()
@@ -302,7 +372,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 }
 
                 vec3 lightDirection = normalize(vec3(0.35, 0.78, 0.52));
-                float diffuse = 0.34 + (0.66 * abs(dot(normalize(vNormal), lightDirection)));
+                float diffuse = 0.40 + (0.60 * abs(dot(normalize(vNormal), lightDirection)));
                 gl_FragColor = vec4(vColor * diffuse, 1.0);
             }
         """

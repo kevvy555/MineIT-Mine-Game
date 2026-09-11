@@ -1,10 +1,10 @@
-# 3D Geological World POC — 0.3.0
+# 3D Geological World POC — 0.4.0
 
 ## Purpose
 
-This POC replaces the Mine Prism experiment with the first implementation of the intended long-term mine representation: a continuous, expandable 3D geological volume.
+This POC advances the continuous 3D mine into the interaction model intended for the game: a solid geological volume that can be rotated, sliced and excavated while preserving discovery.
 
-The goal is to validate both the player interaction and the technical split between a renderer-independent mine simulation and a lightweight native 3D renderer.
+The main design goal for 0.4 is to make the mine read as **solid rock**. The player should feel as though they are cutting through geology like a CT scan, not looking at a tunnel floating inside a transparent box.
 
 ## Architecture
 
@@ -16,9 +16,11 @@ The goal is to validate both the player interaction and the technical split betw
 - chunk extent and world bounds;
 - tunnel geometry;
 - ore-body geometry;
-- excavation direction;
+- continuous excavation state;
+- horizontal steering;
+- vertical excavation angle;
 - automatic extent expansion;
-- exposed-ore detection;
+- exposed-ore detection and connected-body discovery;
 - excavated volume;
 - waste-rock tonnage.
 
@@ -26,94 +28,107 @@ No Android/OpenGL types are permitted in this layer.
 
 ### Mesh generation
 
-The visual rock is generated from a scalar solid/air field.
+The visual rock is generated from a scalar solid/air field. A point is solid only when it is inside the geological bounds and outside excavated tunnel volume.
 
-A point is solid only when it is:
+The field is sampled on a grid and polygonised with marching tetrahedra. The grid remains an implementation detail; visible tunnels are smooth triangle surfaces rather than block voxels.
 
-- inside the current geological bounds; and
-- outside every excavated tunnel volume.
+### Solid CT slice caps
 
-The POC samples this field on a fine grid and polygonises each cube through marching tetrahedra. This produces smooth triangle surfaces around both the exterior geological block and the excavated tunnel walls without showing square voxel blocks.
+OpenGL clipping alone creates a hollow-shell appearance because removed triangles leave an open volume. 0.4 adds a generated **cut cap** at the active X, Y or Z plane.
 
-The grid is an implementation detail, not the visible gameplay geometry.
+The cap samples the same authoritative solid/air field:
 
-### Ore
+- solid cells draw rock;
+- excavated tunnel cells remain open holes;
+- the surface edge can draw grass;
+- after discovery, cells inside the connected ore body draw mineralisation.
+
+This gives the sliced block a physically solid cross-section.
+
+### Ore discovery
 
 The ore body is a continuous tube-like field interpolated through 3D control nodes with varying radius.
 
-Ore is deliberately **not rendered as a transparent hidden object inside intact rock**. Instead, generated tunnel-wall triangles are classified by the underlying ore field. Only excavated surfaces that intersect mineralisation are coloured as exposed ore.
+Before first contact, the vein is hidden and cannot be revealed merely by moving a slice plane. Once any excavation intersects the connected ore body, that body becomes discovered. From then on, geological slice caps show the ore wherever the current X/Y/Z plane intersects the known connected vein.
 
-This preserves discovery: slicing the rock cannot be used to reveal ore that mining has not exposed.
+This makes first contact a meaningful discovery event while allowing the player to inspect the deposit and plan how to mine it.
 
-### Renderer
+### Surface and mining machine
 
-Compose remains responsible for the normal Android UI. A `GLSurfaceView` is embedded for the 3D viewport.
+The initial mine is untouched solid rock with a grass-covered surface at Z=0. A simple 3D mining machine begins on that surface, aligned with the starting heading and down-angle.
 
-OpenGL ES currently provides only the generic graphics work:
+The machine is renderer geometry only. Its authoritative position and orientation come from domain tunnel/heading state.
+
+### Continuous digging
+
+The fixed `DIG +8m` command has been removed.
+
+The player now starts and stops excavation. While digging, the domain advances the machine on timed simulation ticks:
+
+- **Steer LEFT/RIGHT** controls turn rate around the horizontal plane;
+- **Angle UP/DOWN** controls vertical excavation angle;
+- the angle UI is intentionally vertical to match the physical meaning;
+- the machine cannot start level/upward from the surface;
+- upward excavation from underground stops when it exits back through the surface;
+- each movement segment expands the tunnel geometry and material accounting.
+
+The X/Y/Z inspection slices remain independent of digging and can be moved while excavation continues.
+
+## Renderer
+
+Compose remains responsible for the Android UI. `GLSurfaceView` provides the 3D viewport.
+
+OpenGL ES provides generic graphics work only:
 
 - perspective camera;
+- orbit rotation and pinch zoom;
 - depth testing;
 - triangle rendering;
-- simple lighting;
-- X/Y/Z clipping planes.
+- X/Y/Z clipping;
+- simple lighting.
 
-The renderer has no authority over mine rules.
+Generated meshes currently include:
 
-## Current interaction
+- geological/tunnel surface mesh;
+- CT cut-cap mesh;
+- simple mining-machine mesh.
 
-- drag: orbit the 3D mine;
-- pinch: zoom;
-- X/Y/Z buttons: choose geological cutting axis;
-- slice slider: move the cutting plane;
-- CUT + / CUT -: reverse which side is removed;
-- CUT ON / FULL: enable/disable slicing;
-- Azimuth: excavation compass direction;
-- Dip: excavation up/down angle;
-- DIG +8m: add a new arbitrary 3D tunnel segment;
-- VIEW: reset camera;
-- RESET: restore the starting shaft.
+The renderer has no authority over gameplay rules.
 
 ## World expansion
 
-The geological volume is divided conceptually into 24 m chunks. The current POC maintains a contiguous chunk extent.
-
-When the active tunnel approaches an X, Y or Z edge, another chunk is added in that direction before excavation reaches the boundary. The visible rock volume therefore grows with the mine rather than being a permanently fixed cube.
-
-A future implementation can replace the simple contiguous extent with sparse streamed chunks without changing the game-facing model.
+The geological volume grows in 24 m chunks when excavation approaches an X, Y or Z boundary. The current model keeps a contiguous extent; this can later become sparse streamed chunks without changing the player-facing concept.
 
 ## Material accounting
 
-For the POC, each new tunnel segment adds its swept cylindrical volume to the excavated total.
+Each new tunnel segment adds its swept cylindrical volume to the excavated total. Waste rock currently uses a provisional density of 2.7 tonnes/m³.
 
-Waste rock is calculated using a provisional bulk rock density of 2.7 tonnes/m³.
-
-This is intentionally approximate where excavation volumes overlap. A later occupancy/material field will make removed-volume accounting authoritative and prevent previously mined void from being counted twice.
+Overlap is still approximate. A later occupancy/material field will make removed-volume accounting authoritative and prevent double-counting previously excavated void.
 
 ## Deliberate non-goals
 
-0.3 does not yet include:
+0.4 still does not include:
 
-- broken-rock piles;
+- broken-rock piles or removal logistics;
 - loaders/trucks/conveyors;
 - shaft hoisting;
 - workers;
 - power;
 - ventilation;
-- detailed geological rock types;
-- drilling/survey uncertainty;
-- arbitrary tunnel cross-sections;
+- multiple rock/mineral types;
+- survey uncertainty;
+- arbitrary machine/tunnel profiles;
 - stopes;
-- saving/loading;
+- save/load;
 - sparse chunk streaming;
 - advanced lighting/textures.
 
 ## What to evaluate
 
-The important questions for this build are:
-
-1. Does freely rotating and slicing the mine make the 3D geology understandable on a phone?
-2. Do smooth tunnels feel substantially better than visible voxel/block excavation?
-3. Does discovering ore on physical tunnel walls make intuitive sense?
-4. Does steering with azimuth/dip make it believable that excavation can go anywhere in X/Y/Z?
-5. Does automatic geological-volume expansion feel like the mine is growing rather than moving inside a fixed level?
-6. Is the custom OpenGL approach lightweight enough to continue, or would a renderer such as Filament/Godot provide enough benefit to justify adoption?
+1. Does the generated cut face make the volume finally feel like solid rock?
+2. Does rotating while changing X/Y/Z slices feel like inspecting a geological CT scan?
+3. Is starting the machine at the grass surface spatially understandable?
+4. Are **LEFT/RIGHT** steering and the vertical **UP/DOWN** angle control intuitive without mining terminology?
+5. Does continuous start/stop digging feel better than discrete excavation steps?
+6. Is revealing the connected vein after first contact a satisfying and useful discovery mechanic?
+7. Does the custom OpenGL/mesh approach still perform well enough on the target phone as continuous excavation updates the geometry?

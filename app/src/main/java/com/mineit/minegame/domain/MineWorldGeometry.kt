@@ -13,10 +13,12 @@ object MineWorldGeometry {
         return sqrt((dx * dx) + (dy * dy) + (dz * dz))
     }
 
-    fun distanceToTunnel(point: MinePoint3D, tunnel: TunnelGeometry): Float =
-        tunnel.points.zipWithNext().minOfOrNull { (start, end) ->
+    fun distanceToTunnel(point: MinePoint3D, tunnel: TunnelGeometry): Float {
+        if (tunnel.points.size < 2) return Float.POSITIVE_INFINITY
+        return tunnel.points.zipWithNext().minOf { (start, end) ->
             distanceToSegment(point, start, end)
-        } ?: distance(point, tunnel.end)
+        }
+    }
 
     fun oreMargin(point: MinePoint3D, oreBody: List<OreBodyNode>): Float {
         if (oreBody.size < 2) return Float.NEGATIVE_INFINITY
@@ -57,9 +59,9 @@ object MineWorldGeometry {
     fun exposedOreSegments(
         tunnel: TunnelGeometry,
         oreBody: List<OreBodyNode>,
-        sampleSpacingMetres: Float = 1f,
+        sampleSpacingMetres: Float = 0.75f,
     ): Set<Int> {
-        if (oreBody.size < 2) return emptySet()
+        if (tunnel.points.size < 2 || oreBody.size < 2) return emptySet()
         val exposed = mutableSetOf<Int>()
 
         tunnel.points.zipWithNext().forEach { (start, end) ->

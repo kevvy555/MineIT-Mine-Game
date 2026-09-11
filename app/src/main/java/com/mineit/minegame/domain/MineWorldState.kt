@@ -66,13 +66,19 @@ data class MineWorldState(
     val tunnel: TunnelGeometry = MineWorldContent.initialTunnel,
     val extent: ChunkExtent = MineWorldContent.initialExtent,
     val oreBody: List<OreBodyNode> = MineWorldContent.oreBody,
-    val azimuthDegrees: Float = 32f,
-    val dipDegrees: Float = 12f,
-    val excavatedVolumeCubicMetres: Float = MineWorldContent.initialExcavatedVolume,
-    val exposedOreSegments: Set<Int> = MineWorldContent.initialExposedOreSegments,
+    val headingDegrees: Float = 25f,
+    val verticalAngleDegrees: Float = 55f,
+    val steering: Float = 0f,
+    val isDigging: Boolean = false,
+    val excavatedVolumeCubicMetres: Float = 0f,
+    val exposedOreSegments: Set<Int> = emptySet(),
+    val oreBodyDiscovered: Boolean = false,
 ) {
     val bounds: MineWorldBounds
         get() = extent.bounds(MineWorldController.CHUNK_SIZE_METRES)
+
+    val depthMetres: Float
+        get() = tunnel.end.z.coerceAtLeast(0f)
 
     val wasteRockTonnes: Float
         get() = excavatedVolumeCubicMetres * MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE
@@ -89,28 +95,20 @@ object MineWorldContent {
     )
 
     val initialTunnel = TunnelGeometry(
-        points = listOf(
-            MinePoint3D(0f, 0f, 0f),
-            MinePoint3D(0f, 0f, 24f),
-        ),
+        points = listOf(MinePoint3D(0f, 0f, 0f)),
         radiusMetres = 3.2f,
     )
 
+    // One connected hard-rock vein. It is hidden until excavation first intersects it.
+    // After discovery, slices may reveal the connected body throughout generated geology.
     val oreBody = listOf(
-        OreBodyNode(MinePoint3D(3.5f, -1.5f, 18f), 5.0f),
-        OreBodyNode(MinePoint3D(5f, 1f, 26f), 5.5f),
-        OreBodyNode(MinePoint3D(10f, 6f, 34f), 6.0f),
-        OreBodyNode(MinePoint3D(16f, 12f, 42f), 6.5f),
-        OreBodyNode(MinePoint3D(21f, 18f, 50f), 5.5f),
-        OreBodyNode(MinePoint3D(18f, 25f, 60f), 4.5f),
-        OreBodyNode(MinePoint3D(10f, 32f, 69f), 3.8f),
-    )
-
-    val initialExcavatedVolume: Float = MineWorldGeometry.sweptVolume(initialTunnel)
-
-    val initialExposedOreSegments: Set<Int> = MineWorldGeometry.exposedOreSegments(
-        tunnel = initialTunnel,
-        oreBody = oreBody,
+        OreBodyNode(MinePoint3D(11f, 5f, 17f), 4.6f),
+        OreBodyNode(MinePoint3D(15f, 9f, 25f), 5.0f),
+        OreBodyNode(MinePoint3D(20f, 12f, 34f), 5.6f),
+        OreBodyNode(MinePoint3D(24f, 10f, 44f), 6.2f),
+        OreBodyNode(MinePoint3D(21f, 3f, 54f), 5.4f),
+        OreBodyNode(MinePoint3D(14f, -5f, 65f), 4.7f),
+        OreBodyNode(MinePoint3D(6f, -12f, 76f), 4.0f),
     )
 }
 
