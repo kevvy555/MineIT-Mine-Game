@@ -11,12 +11,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-data class MineMesh(
+internal data class MineMesh(
     val vertices: FloatArray,
     val vertexCount: Int,
 )
 
-object MineMeshBuilder {
+internal object MineMeshBuilder {
     private const val GRID_STEP_METRES = 2f
     private const val CUT_CAP_STEP_METRES = 0.9f
     private const val NORMAL_SAMPLE_METRES = 0.45f
