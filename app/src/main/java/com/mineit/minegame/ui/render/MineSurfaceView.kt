@@ -47,6 +47,10 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         mineRenderer.setFollowDigger(enabled)
     }
 
+    fun setCameraMode(mode: CameraMode) {
+        mineRenderer.setCameraMode(mode)
+    }
+
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
         performanceListener = listener
     }

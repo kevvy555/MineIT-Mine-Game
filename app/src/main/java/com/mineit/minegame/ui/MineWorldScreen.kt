@@ -15,12 +15,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,9 +40,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
+import com.mineit.minegame.ui.render.CameraMode
 import com.mineit.minegame.ui.render.ClipAxis
+import com.mineit.minegame.ui.render.FollowSlicePlanner
 import com.mineit.minegame.ui.render.MineSurfaceView
 import com.mineit.minegame.ui.render.RenderPerformanceStats
+import com.mineit.minegame.ui.render.SliceFractions
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -59,13 +63,21 @@ fun MineWorldScreen(
     var surfaceView by remember { mutableStateOf<MineSurfaceView?>(null) }
     var performanceStats by remember { mutableStateOf(RenderPerformanceStats()) }
     var clipAxis by remember { mutableStateOf(ClipAxis.X) }
-    var clipFraction by remember { mutableStateOf(0.18f) }
+    var sliceFractions by remember { mutableStateOf(SliceFractions(0.18f, 0.18f, 0.18f)) }
     var clipFlipped by remember { mutableStateOf(false) }
     var clipEnabled by remember { mutableStateOf(true) }
     var followDigger by remember { mutableStateOf(false) }
+    var cameraMode by remember { mutableStateOf(CameraMode.ORBIT) }
     var showDiagnostics by remember { mutableStateOf(true) }
     var selectedPanel by remember { mutableStateOf(ControlPanel.CONTROL) }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val clipFraction = sliceFractions.forAxis(clipAxis)
+
+    LaunchedEffect(followDigger, state.tunnel.end, state.extent) {
+        if (followDigger) {
+            sliceFractions = FollowSlicePlanner.forDigger(state)
+        }
+    }
 
     DisposableEffect(lifecycleOwner, surfaceView) {
         val activeView = surfaceView
@@ -111,12 +123,14 @@ fun MineWorldScreen(
                         view.setWorldState(state)
                         view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
                         view.setFollowDigger(followDigger)
+                        view.setCameraMode(cameraMode)
                     }
                 },
                 update = { view ->
                     view.setWorldState(state)
                     view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
                     view.setFollowDigger(followDigger)
+                    view.setCameraMode(cameraMode)
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -140,13 +154,21 @@ fun MineWorldScreen(
             clipFlipped = clipFlipped,
             clipEnabled = clipEnabled,
             followDigger = followDigger,
+            cameraMode = cameraMode,
             showDiagnostics = showDiagnostics,
             performanceStats = performanceStats,
             onClipAxisChange = { clipAxis = it },
-            onClipFractionChange = { clipFraction = it },
+            onClipFractionChange = { value ->
+                sliceFractions = when (clipAxis) {
+                    ClipAxis.X -> sliceFractions.copy(x = value)
+                    ClipAxis.Y -> sliceFractions.copy(y = value)
+                    ClipAxis.Z -> sliceFractions.copy(z = value)
+                }
+            },
             onFlipClip = { clipFlipped = !clipFlipped },
             onToggleClip = { clipEnabled = !clipEnabled },
             onToggleFollow = { followDigger = !followDigger },
+            onCameraModeChange = { cameraMode = it },
             onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
             onSteeringChange = viewModel::setSteering,
             onVerticalAngleChange = viewModel::setVerticalAngle,
@@ -172,13 +194,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.6.0",
+                    text = "MINEIT // 3D GEOLOGY 0.7.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "ASYNC MESH + FOLLOW CAMERA",
+                    text = "PROGRESSIVE MESH + DIGGER POV",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -254,6 +276,7 @@ private fun MineWorldControls(
     clipFlipped: Boolean,
     clipEnabled: Boolean,
     followDigger: Boolean,
+    cameraMode: CameraMode,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
     onClipAxisChange: (ClipAxis) -> Unit,
@@ -261,6 +284,7 @@ private fun MineWorldControls(
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
     onToggleFollow: () -> Unit,
+    onCameraModeChange: (CameraMode) -> Unit,
     onToggleDiagnostics: () -> Unit,
     onSteeringChange: (Float) -> Unit,
     onVerticalAngleChange: (Float) -> Unit,
@@ -294,11 +318,13 @@ private fun MineWorldControls(
                 clipFlipped = clipFlipped,
                 clipEnabled = clipEnabled,
                 followDigger = followDigger,
+                cameraMode = cameraMode,
                 onClipAxisChange = onClipAxisChange,
                 onClipFractionChange = onClipFractionChange,
                 onFlipClip = onFlipClip,
                 onToggleClip = onToggleClip,
                 onToggleFollow = onToggleFollow,
+                onCameraModeChange = onCameraModeChange,
                 onResetView = onResetView,
             )
 
@@ -440,11 +466,13 @@ private fun ViewPanelContent(
     clipFlipped: Boolean,
     clipEnabled: Boolean,
     followDigger: Boolean,
+    cameraMode: CameraMode,
     onClipAxisChange: (ClipAxis) -> Unit,
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
     onToggleClip: () -> Unit,
     onToggleFollow: () -> Unit,
+    onCameraModeChange: (CameraMode) -> Unit,
     onResetView: () -> Unit,
 ) {
     Row(
@@ -494,8 +522,8 @@ private fun ViewPanelContent(
     ) {
         ToggleButton(
             selected = followDigger,
-            selectedText = "FOLLOW DIGGER ON",
-            unselectedText = "FOLLOW DIGGER OFF",
+            selectedText = "FOLLOW + SLICES ON",
+            unselectedText = "FOLLOW + SLICES OFF",
             onClick = onToggleFollow,
             modifier = Modifier.weight(1.4f),
         )
@@ -505,7 +533,38 @@ private fun ViewPanelContent(
     }
 
     Text(
-        text = "Pinch now zooms much closer. Follow keeps the camera centred on the machine while it moves; the orange x-ray stays visible through rock and slices.",
+        text = "CAMERA",
+        color = Color(0xFFB5BEC8),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 5.dp),
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        CameraModeButton(
+            label = "ORBIT / CT",
+            selected = cameraMode == CameraMode.ORBIT,
+            onClick = { onCameraModeChange(CameraMode.ORBIT) },
+            modifier = Modifier.weight(1f),
+        )
+        CameraModeButton(
+            label = "DIGGER POV",
+            selected = cameraMode == CameraMode.DIGGER_POV,
+            onClick = { onCameraModeChange(CameraMode.DIGGER_POV) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+
+    Text(
+        text = if (cameraMode == CameraMode.DIGGER_POV) {
+            "Digger POV looks straight out from just behind the cutter and ignores CT clipping. Switch back to ORBIT / CT for slicing and free rotation."
+        } else if (followDigger) {
+            "Follow now keeps the camera and all X/Y/Z slice positions on the machine. Switching slice axis stays centred on the digger."
+        } else {
+            "Drag to rotate • pinch to zoom • CT slices update progressively while you move them."
+        },
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 5.dp),
@@ -544,7 +603,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "Mesh generation now runs away from the OpenGL render thread. Active excavation remeshes by distance rather than every simulation tick, then refines touched chunks when digging stops.",
+        text = "0.7 applies completed async geometry progressively instead of discarding useful intermediate revisions. Live excavation is also sampled more finely, with a second refinement pass when digging stops.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),
@@ -657,6 +716,31 @@ private fun AxisButton(
     } else {
         OutlinedButton(onClick = onClick, modifier = modifier) {
             Text(axis.name)
+        }
+    }
+}
+
+@Composable
+private fun CameraModeButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier.height(36.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF356B75)),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier.height(36.dp),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
