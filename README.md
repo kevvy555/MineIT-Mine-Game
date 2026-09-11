@@ -2,21 +2,23 @@
 
 Native Android mining-game prototype in the MineIT universe.
 
-## Current prototype — 0.7.0
+## Current prototype — 0.8.0
 
 The mine is a genuine **3D geological volume** with renderer-independent gameplay rules and a lightweight native OpenGL renderer.
 
-0.7 builds on the proven 90 FPS Pixel 7 result and focuses on visual fidelity and eliminating asynchronous catch-up lag:
+0.8 responds to real Pixel 7 diagnostics: rendering stayed at 90 FPS, but CPU geology generation could fall several seconds behind the digger as the world expanded. The focus is therefore **geometry throughput**, plus two new player controls.
 
-- chunk and CT-cap meshes still build away from the OpenGL render thread;
-- completed geometry is now shown **progressively** even when a newer revision is already queued, so excavation and CT slices no longer appear frozen until movement stops;
-- active tunnel sampling increases from the previous coarse setting to roughly **1.6 m**, with a **1.0 m** stopped/refined pass for smoother walls;
-- follow mode now tracks not only the camera but also independent **X, Y and Z slice positions** around the digger;
-- switching X/Y/Z while follow is enabled therefore stays centred on the machine;
-- a new **DIGGER POV** camera sits just behind the cutter and looks directly along the machine heading/slope;
-- DIGGER POV deliberately ignores CT clipping so it represents the physical view from the machine;
-- returning to **ORBIT / CT** restores normal free rotation, slicing and the previously followed slice positions;
-- the existing x-ray machine, fixed 45°/90° horizontal turns and absolute vertical angle presets remain intact.
+- untouched outer rock chunks now use a very cheap planar shell instead of running marching tetrahedra over solid material;
+- detailed scalar-field meshing is reserved for chunks actually affected by excavation;
+- redundant solid-field samples previously made for every generated triangle have been removed;
+- dense 100 ms simulation tunnel segments are compacted for meshing while preserving endpoints and sharp bends;
+- two bounded low-priority chunk workers can process the active face in parallel without creating an unbounded CPU pool;
+- active excavation is prioritised over stopped high-detail refinement work;
+- CT-cap sampling is lighter and repeated slice requests are throttled by physical movement distance;
+- live/refined tunnel quality remains approximately **1.6 m / 1.0 m**;
+- a new **SPEED** control changes the real domain excavation rate from **0.25× to 2.0×**;
+- **ROCK OFF** hides geological rock and CT caps but keeps the grass surface and renders the complete excavated tunnel directly, independent of the detailed rock-mesh backlog;
+- follow camera/slices, DIGGER POV, x-ray machine, fixed horizontal turns and absolute vertical angle presets remain available.
 
 ## Controls
 
@@ -26,17 +28,19 @@ The mine is a genuine **3D geological volume** with renderer-independent gamepla
 - When stopped, use **L 90 / L 45 / R 45 / R 90** for exact relative horizontal turns.
 - Use the vertical **ANGLE — UP / DOWN** slider for arbitrary slope.
 - Use **UP 90 / UP 45 / LEVEL / DOWN 45 / DOWN 90** for exact vertical angles.
+- Use **SPEED** for 0.25×–2.0× excavation speed.
 - Press **START DIGGING / STOP** for continuous excavation.
 
 ### VIEW
 
+- **ROCK ON** shows the solid geological model and CT tools.
+- **ROCK OFF** shows the excavated tunnel network while retaining grass as the surface reference.
 - In **ORBIT / CT**, drag to orbit and pinch to zoom.
-- Select **X / Y / Z** and move the slice slider to inspect the geology like a CT scan.
+- Select **X / Y / Z** and move the slice slider to inspect geology like a CT scan.
 - **OTHER SIDE** reverses which side of the cut remains visible.
 - **SLICE ON / FULL** switches between cutaway and the complete geological volume.
-- **FOLLOW + SLICES** centres the orbit camera on the digger and moves all three slice positions with it.
+- **FOLLOW** centres the orbit camera on the digger and moves all three slice positions with it.
 - **DIGGER POV** looks straight out from just behind the cutter along the current heading and slope.
-- **RESET VIEW** restores the default orbit/zoom.
 
 ### OTHER
 
@@ -47,8 +51,8 @@ Purple mineralisation remains hidden until first physical contact. After discove
 
 ## Architecture
 
-- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, excavation, discovery and material accounting.
+- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, excavation speed, discovery and material accounting.
 - `ui/` — Compose controls, continuous-dig loop and Android lifecycle/view state.
-- `ui/render/` — chunk planning/spatial indexing, progressive asynchronous mesh workers, OpenGL ES cameras/VBO cache, clipping, CT caps, follow planning and x-ray machine rendering.
+- `ui/render/` — chunk planning/spatial indexing, tunnel-segment compaction, bounded asynchronous mesh workers, OpenGL ES cameras/VBO cache, clipping, CT caps, direct tunnel overview and x-ray machine rendering.
 
 See `docs/THREE_D_WORLD_POC.md` for the current design direction.
