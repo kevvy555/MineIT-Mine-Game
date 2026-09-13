@@ -58,27 +58,39 @@ data class TabularVeinGeometry(
     val phaseRadians: Float,
 ) : OreDepositGeometry {
     override val archetype: OreDepositArchetype = OreDepositArchetype.TABULAR_VEIN
+    private val basis = oreBasis(strikeDegrees, dipDegrees)
+    private val halfLength = lengthMetres * 0.5f
+    private val halfWidth = widthMetres * 0.5f
+    private val halfThickness = thicknessMetres * 0.5f
+    private val halfNormalExtent = halfThickness + waveAmplitudeMetres
 
-    private val basis: OreBasis
-        get() = oreBasis(strikeDegrees, dipDegrees)
+    override val bounds: MineWorldBounds = orientedBounds(
+        centre = centre,
+        basis = basis,
+        halfU = halfLength,
+        halfV = halfWidth,
+        halfN = halfNormalExtent,
+    )
 
-    override val bounds: MineWorldBounds
-        get() = orientedBounds(
-            centre = centre,
-            basis = basis,
-            halfU = lengthMetres * 0.5f,
-            halfV = widthMetres * 0.5f,
-            halfN = (thicknessMetres * 0.5f) + waveAmplitudeMetres,
-        )
+    private val localPlanningBounds = segmentedPlanningBounds(
+        centre = centre,
+        basis = basis,
+        halfU = halfLength,
+        halfV = halfWidth,
+        halfN = halfNormalExtent,
+        targetSegmentLengthMetres = 18f,
+    )
 
     override fun margin(point: MinePoint3D): Float {
-        val local = toLocal(point, centre, basis)
-        val halfLength = lengthMetres * 0.5f
-        val halfWidth = widthMetres * 0.5f
-        val halfThickness = thicknessMetres * 0.5f
-        val uRatio = if (halfLength > 0f) local.u / halfLength else 0f
-        val vRatio = if (halfWidth > 0f) local.v / halfWidth else 0f
-        val footprintMargin = min(halfLength - abs(local.u), halfWidth - abs(local.v))
+        val dx = point.x - centre.x
+        val dy = point.y - centre.y
+        val dz = point.z - centre.z
+        val localU = (dx * basis.u.x) + (dy * basis.u.y) + (dz * basis.u.z)
+        val localV = (dx * basis.v.x) + (dy * basis.v.y) + (dz * basis.v.z)
+        val localN = (dx * basis.n.x) + (dy * basis.n.y) + (dz * basis.n.z)
+        val uRatio = if (halfLength > 0f) localU / halfLength else 0f
+        val vRatio = if (halfWidth > 0f) localV / halfWidth else 0f
+        val footprintMargin = min(halfLength - abs(localU), halfWidth - abs(localV))
         val uTaper = sqrt(max(0f, 1f - (uRatio * uRatio)))
         val vTaper = sqrt(max(0f, 1f - (vRatio * vRatio)))
         val edgeTaper = 0.55f + (0.45f * uTaper * vTaper)
@@ -88,18 +100,11 @@ data class TabularVeinGeometry(
         val wave = waveAmplitudeMetres *
             sin((uRatio * PI.toFloat() * waveCycles) + phaseRadians) *
             cos(vRatio * PI.toFloat() * 0.5f)
-        val thicknessMargin = (halfThickness * pinch * edgeTaper) - abs(local.n - wave)
+        val thicknessMargin = (halfThickness * pinch * edgeTaper) - abs(localN - wave)
         return min(footprintMargin, thicknessMargin)
     }
 
-    override fun planningBounds(): List<MineWorldBounds> = segmentedPlanningBounds(
-        centre = centre,
-        basis = basis,
-        halfU = lengthMetres * 0.5f,
-        halfV = widthMetres * 0.5f,
-        halfN = (thicknessMetres * 0.5f) + waveAmplitudeMetres,
-        targetSegmentLengthMetres = 18f,
-    )
+    override fun planningBounds(): List<MineWorldBounds> = localPlanningBounds
 }
 
 data class LensMassiveGeometry(
@@ -113,45 +118,54 @@ data class LensMassiveGeometry(
     val phaseRadians: Float,
 ) : OreDepositGeometry {
     override val archetype: OreDepositArchetype = OreDepositArchetype.LENS_MASSIVE
+    private val basis = oreBasis(strikeDegrees, dipDegrees)
+    private val baseScale = minOf(halfLengthMetres, halfWidthMetres, halfThicknessMetres)
+    private val irregularityPaddingMetres = conservativeIrregularityPadding(
+        irregularityMetres,
+        baseScale,
+        maxOf(halfLengthMetres, halfWidthMetres, halfThicknessMetres),
+    )
 
-    private val basis: OreBasis
-        get() = oreBasis(strikeDegrees, dipDegrees)
+    override val bounds: MineWorldBounds = orientedBounds(
+        centre,
+        basis,
+        halfLengthMetres,
+        halfWidthMetres,
+        halfThicknessMetres,
+        irregularityPaddingMetres,
+    )
 
-    override val bounds: MineWorldBounds
-        get() = orientedBounds(
-            centre,
-            basis,
-            halfLengthMetres,
-            halfWidthMetres,
-            halfThicknessMetres,
-            irregularityMetres,
-        )
-
-    override fun margin(point: MinePoint3D): Float {
-        val local = toLocal(point, centre, basis)
-        val normalized = sqrt(
-            square(local.u / halfLengthMetres) +
-                square(local.v / halfWidthMetres) +
-                square(local.n / halfThicknessMetres),
-        )
-        val baseScale = minOf(halfLengthMetres, halfWidthMetres, halfThicknessMetres)
-        val noise = irregularityMetres * (
-            sin((local.u * 0.17f) + phaseRadians) +
-                sin((local.v * 0.21f) - (phaseRadians * 0.7f)) +
-                sin((local.n * 0.31f) + (phaseRadians * 1.4f))
-            ) / 3f
-        return (baseScale * (1f - normalized)) + noise
-    }
-
-    override fun planningBounds(): List<MineWorldBounds> = segmentedPlanningBounds(
+    private val localPlanningBounds = segmentedPlanningBounds(
         centre = centre,
         basis = basis,
         halfU = halfLengthMetres,
         halfV = halfWidthMetres,
         halfN = halfThicknessMetres,
         targetSegmentLengthMetres = 16f,
-        paddingMetres = irregularityMetres,
+        paddingMetres = irregularityPaddingMetres,
     )
+
+    override fun margin(point: MinePoint3D): Float {
+        val dx = point.x - centre.x
+        val dy = point.y - centre.y
+        val dz = point.z - centre.z
+        val localU = (dx * basis.u.x) + (dy * basis.u.y) + (dz * basis.u.z)
+        val localV = (dx * basis.v.x) + (dy * basis.v.y) + (dz * basis.v.z)
+        val localN = (dx * basis.n.x) + (dy * basis.n.y) + (dz * basis.n.z)
+        val normalized = sqrt(
+            square(localU / halfLengthMetres) +
+                square(localV / halfWidthMetres) +
+                square(localN / halfThicknessMetres),
+        )
+        val noise = irregularityMetres * (
+            sin((localU * 0.17f) + phaseRadians) +
+                sin((localV * 0.21f) - (phaseRadians * 0.7f)) +
+                sin((localN * 0.31f) + (phaseRadians * 1.4f))
+            ) / 3f
+        return (baseScale * (1f - normalized)) + noise
+    }
+
+    override fun planningBounds(): List<MineWorldBounds> = localPlanningBounds
 }
 
 data class LayeredStratiformGeometry(
@@ -165,44 +179,49 @@ data class LayeredStratiformGeometry(
     val phaseRadians: Float,
 ) : OreDepositGeometry {
     override val archetype: OreDepositArchetype = OreDepositArchetype.LAYERED_STRATIFORM
+    private val basis = oreBasis(strikeDegrees, dipDegrees)
+    private val halfLength = lengthMetres * 0.5f
+    private val halfWidth = widthMetres * 0.5f
+    private val halfThickness = thicknessMetres * 0.5f
+    private val halfNormalExtent = halfThickness * 1.12f + waveAmplitudeMetres
 
-    private val basis: OreBasis
-        get() = oreBasis(strikeDegrees, dipDegrees)
+    override val bounds: MineWorldBounds = orientedBounds(
+        centre = centre,
+        basis = basis,
+        halfU = halfLength,
+        halfV = halfWidth,
+        halfN = halfNormalExtent,
+    )
 
-    override val bounds: MineWorldBounds
-        get() = orientedBounds(
-            centre = centre,
-            basis = basis,
-            halfU = lengthMetres * 0.5f,
-            halfV = widthMetres * 0.5f,
-            halfN = (thicknessMetres * 0.5f) + waveAmplitudeMetres,
-        )
+    private val localPlanningBounds = segmentedPlanningBounds(
+        centre = centre,
+        basis = basis,
+        halfU = halfLength,
+        halfV = halfWidth,
+        halfN = halfNormalExtent,
+        targetSegmentLengthMetres = 18f,
+    )
 
     override fun margin(point: MinePoint3D): Float {
-        val local = toLocal(point, centre, basis)
-        val halfLength = lengthMetres * 0.5f
-        val halfWidth = widthMetres * 0.5f
-        val halfThickness = thicknessMetres * 0.5f
-        val footprintMargin = min(halfLength - abs(local.u), halfWidth - abs(local.v))
+        val dx = point.x - centre.x
+        val dy = point.y - centre.y
+        val dz = point.z - centre.z
+        val localU = (dx * basis.u.x) + (dy * basis.u.y) + (dz * basis.u.z)
+        val localV = (dx * basis.v.x) + (dy * basis.v.y) + (dz * basis.v.z)
+        val localN = (dx * basis.n.x) + (dy * basis.n.y) + (dz * basis.n.z)
+        val footprintMargin = min(halfLength - abs(localU), halfWidth - abs(localV))
         val wave = waveAmplitudeMetres * 0.5f * (
-            sin((local.u / max(1f, lengthMetres)) * 4f * PI.toFloat() + phaseRadians) +
-                sin((local.v / max(1f, widthMetres)) * 3f * PI.toFloat() - phaseRadians)
+            sin((localU / max(1f, lengthMetres)) * 4f * PI.toFloat() + phaseRadians) +
+                sin((localV / max(1f, widthMetres)) * 3f * PI.toFloat() - phaseRadians)
             )
         val thicknessVariation = 1f + 0.12f * sin(
-            ((local.u + local.v) * 0.07f) + (phaseRadians * 0.5f),
+            ((localU + localV) * 0.07f) + (phaseRadians * 0.5f),
         )
-        val thicknessMargin = (halfThickness * thicknessVariation) - abs(local.n - wave)
+        val thicknessMargin = (halfThickness * thicknessVariation) - abs(localN - wave)
         return min(footprintMargin, thicknessMargin)
     }
 
-    override fun planningBounds(): List<MineWorldBounds> = segmentedPlanningBounds(
-        centre = centre,
-        basis = basis,
-        halfU = lengthMetres * 0.5f,
-        halfV = widthMetres * 0.5f,
-        halfN = (thicknessMetres * 0.5f) + waveAmplitudeMetres,
-        targetSegmentLengthMetres = 18f,
-    )
+    override fun planningBounds(): List<MineWorldBounds> = localPlanningBounds
 }
 
 data class DisseminatedStockworkGeometry(
@@ -216,46 +235,55 @@ data class DisseminatedStockworkGeometry(
     val phaseRadians: Float,
 ) : OreDepositGeometry {
     override val archetype: OreDepositArchetype = OreDepositArchetype.DISSEMINATED_STOCKWORK
+    private val basis = oreBasis(strikeDegrees, dipDegrees)
+    private val baseScale = minOf(halfLengthMetres, halfWidthMetres, halfHeightMetres)
+    private val irregularityPaddingMetres = conservativeIrregularityPadding(
+        irregularityMetres,
+        baseScale,
+        maxOf(halfLengthMetres, halfWidthMetres, halfHeightMetres),
+    )
 
-    private val basis: OreBasis
-        get() = oreBasis(strikeDegrees, dipDegrees)
+    override val bounds: MineWorldBounds = orientedBounds(
+        centre,
+        basis,
+        halfLengthMetres,
+        halfWidthMetres,
+        halfHeightMetres,
+        irregularityPaddingMetres,
+    )
 
-    override val bounds: MineWorldBounds
-        get() = orientedBounds(
-            centre,
-            basis,
-            halfLengthMetres,
-            halfWidthMetres,
-            halfHeightMetres,
-            irregularityMetres,
-        )
-
-    override fun margin(point: MinePoint3D): Float {
-        val local = toLocal(point, centre, basis)
-        val normalized = sqrt(
-            square(local.u / halfLengthMetres) +
-                square(local.v / halfWidthMetres) +
-                square(local.n / halfHeightMetres),
-        )
-        val baseScale = minOf(halfLengthMetres, halfWidthMetres, halfHeightMetres)
-        val noise = irregularityMetres * (
-            sin((local.u * 0.13f) + phaseRadians) +
-                sin((local.v * 0.16f) - phaseRadians) +
-                sin((local.n * 0.19f) + (phaseRadians * 0.6f)) +
-                sin(((local.u + local.v - local.n) * 0.09f) + (phaseRadians * 1.3f))
-            ) / 4f
-        return (baseScale * (1f - normalized)) + noise
-    }
-
-    override fun planningBounds(): List<MineWorldBounds> = segmentedPlanningBounds(
+    private val localPlanningBounds = segmentedPlanningBounds(
         centre = centre,
         basis = basis,
         halfU = halfLengthMetres,
         halfV = halfWidthMetres,
         halfN = halfHeightMetres,
         targetSegmentLengthMetres = 18f,
-        paddingMetres = irregularityMetres,
+        paddingMetres = irregularityPaddingMetres,
     )
+
+    override fun margin(point: MinePoint3D): Float {
+        val dx = point.x - centre.x
+        val dy = point.y - centre.y
+        val dz = point.z - centre.z
+        val localU = (dx * basis.u.x) + (dy * basis.u.y) + (dz * basis.u.z)
+        val localV = (dx * basis.v.x) + (dy * basis.v.y) + (dz * basis.v.z)
+        val localN = (dx * basis.n.x) + (dy * basis.n.y) + (dz * basis.n.z)
+        val normalized = sqrt(
+            square(localU / halfLengthMetres) +
+                square(localV / halfWidthMetres) +
+                square(localN / halfHeightMetres),
+        )
+        val noise = irregularityMetres * (
+            sin((localU * 0.13f) + phaseRadians) +
+                sin((localV * 0.16f) - phaseRadians) +
+                sin((localN * 0.19f) + (phaseRadians * 0.6f)) +
+                sin(((localU + localV - localN) * 0.09f) + (phaseRadians * 1.3f))
+            ) / 4f
+        return (baseScale * (1f - normalized)) + noise
+    }
+
+    override fun planningBounds(): List<MineWorldBounds> = localPlanningBounds
 }
 
 /** Deterministic, gameplay-oriented Stage 2 geology generator. */
@@ -372,12 +400,6 @@ private data class OreBasis(
     val n: MinePoint3D,
 )
 
-private data class OreLocalPoint(
-    val u: Float,
-    val v: Float,
-    val n: Float,
-)
-
 private fun oreBasis(strikeDegrees: Float, dipDegrees: Float): OreBasis {
     val strike = Math.toRadians(strikeDegrees.toDouble())
     val dip = Math.toRadians(dipDegrees.toDouble())
@@ -393,15 +415,6 @@ private fun oreBasis(strikeDegrees: Float, dipDegrees: Float): OreBasis {
     )
     val n = normalized(cross(u, v))
     return OreBasis(u = u, v = v, n = n)
-}
-
-private fun toLocal(point: MinePoint3D, centre: MinePoint3D, basis: OreBasis): OreLocalPoint {
-    val delta = MinePoint3D(point.x - centre.x, point.y - centre.y, point.z - centre.z)
-    return OreLocalPoint(
-        u = dot(delta, basis.u),
-        v = dot(delta, basis.v),
-        n = dot(delta, basis.n),
-    )
 }
 
 private fun orientedBounds(
@@ -454,8 +467,14 @@ private fun segmentedPlanningBounds(
     }
 }
 
-private fun dot(a: MinePoint3D, b: MinePoint3D): Float =
-    (a.x * b.x) + (a.y * b.y) + (a.z * b.z)
+private fun conservativeIrregularityPadding(
+    irregularityMetres: Float,
+    baseScale: Float,
+    maximumHalfExtent: Float,
+): Float {
+    if (irregularityMetres <= 0f || baseScale <= 0f) return 0f
+    return irregularityMetres * (maximumHalfExtent / baseScale)
+}
 
 private fun cross(a: MinePoint3D, b: MinePoint3D): MinePoint3D = MinePoint3D(
     x = (a.y * b.z) - (a.z * b.y),
