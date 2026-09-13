@@ -211,13 +211,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.10.0",
+                    text = "MINEIT // 3D GEOLOGY 0.10.1",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "PAN + SEEDED GOLD / SILVER / COPPER",
+                    text = "PAN + SOLID CT ORE INSPECTION",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -671,7 +671,7 @@ private fun ViewPanelContent(
 
     Text(
         text = when {
-            seeOre -> "SEE ORE is an inspection view: all seeded deposits inside the generated geology are shown through rock."
+            seeOre -> "SEE ORE adds all seeded deposits to the active CT face only. Gold, silver and copper are solid opaque cross-sections; intact rock stays opaque."
             !rockVisible -> "Rock is hidden using a direct tunnel skin, so this view stays responsive even if detailed geology is still refining."
             cameraMode == CameraMode.DIGGER_POV -> "Digger POV looks straight out from just behind the cutter and ignores CT clipping."
             orbitGestureMode == OrbitGestureMode.PAN -> "PAN selected • drag to move the camera • pinch to zoom. Turn PAN off to rotate again."
@@ -716,7 +716,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.10 keeps the 0.9 immediate CT/global-shell architecture and adds screen-space camera panning plus deterministic typed ore bodies.",
+        text = "0.10.1 keeps the immediate CT/global-shell architecture and makes SEE ORE a CT-only inspection aid with solid typed mineral cross-sections.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),
