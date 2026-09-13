@@ -40,8 +40,8 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         mineRenderer.setWorldState(state)
     }
 
-    fun setClip(axis: ClipAxis, fraction: Float, flipped: Boolean, enabled: Boolean) {
-        mineRenderer.setClip(axis, fraction, flipped, enabled)
+    fun setSlices(configuration: SliceConfiguration) {
+        mineRenderer.setSlices(configuration)
     }
 
     fun setFollowDigger(enabled: Boolean) {
