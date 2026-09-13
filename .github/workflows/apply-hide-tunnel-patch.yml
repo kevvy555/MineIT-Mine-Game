@@ -136,7 +136,7 @@ jobs:
           replace_count(gradle, '        versionCode = 16\n        versionName = "0.12.0"', '        versionCode = 17\n        versionName = "0.12.1"')
 
           readme = "README.md"
-          replace_count(readme, "## Current prototype — 0.8.0", "## Current prototype — 0.12.1")
+          replace_count(readme, "## Current prototype — 0.12.0", "## Current prototype — 0.12.1")
           replace_count(readme,
               "- **ROCK OFF** shows the excavated tunnel network while retaining grass as the surface reference.",
               "- **ROCK OFF** shows the excavation/ore inspection view while retaining grass as the surface reference.\n- **TUNNEL ON/OFF** controls only the direct tunnel overview skin in ROCK OFF, allowing depleted ore to be inspected without changing excavation state or accounting.",
