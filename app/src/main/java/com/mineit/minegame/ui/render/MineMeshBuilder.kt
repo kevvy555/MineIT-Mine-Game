@@ -24,8 +24,8 @@ data class MineMesh(
  *
  * The expensive scalar-field polygoniser is deliberately restricted to tunnel-bearing chunks.
  * The enclosing geological block is one global shell, while the CT face is an analytic plane with
- * analytic tunnel/ore intersections. This keeps world growth and slice movement independent from
- * the amount of untouched rock in the enclosing volume.
+ * analytic tunnel intersections. Ore CT presentation is built separately from the canonical
+ * remaining-material field by [OreMeshBuilder].
  */
 internal object MineMeshBuilder {
     const val ACTIVE_GRID_STEP_METRES = 1.6f
@@ -34,10 +34,8 @@ internal object MineMeshBuilder {
     private const val TUNNEL_OVERVIEW_RING_SEGMENTS = 14
     private const val SLICE_DISC_SEGMENTS = 16
     private const val SLICE_BASE_OFFSET_METRES = 0.035f
-    private const val SLICE_ORE_OFFSET_METRES = 0.055f
     private const val SLICE_TUNNEL_OFFSET_METRES = 0.075f
     private const val SLICE_DEPTH_BAND_METRES = 12f
-    private const val ORE_SLICE_SAMPLE_METRES = 2.2f
     private const val GRASS_GRID_STEP_METRES = 2f
 
     private val tetrahedra = arrayOf(
@@ -200,8 +198,8 @@ internal object MineMeshBuilder {
     }
 
     /**
-     * Constant-area CT construction: one rock plane plus only the tunnel and ore intersections that
-     * actually touch that plane. It no longer scans a 2D grid across the whole generated world.
+     * Constant-area CT rock construction: one rock plane plus only the tunnel intersections that
+     * actually touch that plane. Ore CT is generated independently from the remaining-ore field.
      */
     fun buildCutCap(
         state: MineWorldState,
@@ -210,38 +208,14 @@ internal object MineMeshBuilder {
         flipped: Boolean,
         tunnelSegments: Collection<TunnelSegment>,
     ): MineMesh {
-        val bounds = state.bounds
         val clip = clipValue(state, axis, fraction)
         val normal = capNormal(axis, flipped)
         val normalSign = axisCoordinate(normal, axis)
         val basePlane = clip + (normalSign * SLICE_BASE_OFFSET_METRES)
-        val orePlane = clip + (normalSign * SLICE_ORE_OFFSET_METRES)
         val tunnelPlane = clip + (normalSign * SLICE_TUNNEL_OFFSET_METRES)
         val output = FloatAccumulator(8_192)
 
         appendRockSliceBase(output, state, axis, basePlane, normal)
-
-        if (state.oreBodyDiscovered) {
-            state.oreBody.zipWithNext().forEach { (start, end) ->
-                val length = MineWorldGeometry.distance(start.centre, end.centre)
-                val steps = max(1, ceil(length / ORE_SLICE_SAMPLE_METRES).toInt())
-                for (step in 0..steps) {
-                    val t = step.toFloat() / steps.toFloat()
-                    val centre = MineWorldGeometry.interpolate(start.centre, end.centre, t)
-                    val radius = start.radiusMetres + ((end.radiusMetres - start.radiusMetres) * t)
-                    appendSliceDiscIfIntersecting(
-                        output = output,
-                        axis = axis,
-                        clipValue = clip,
-                        planeValue = orePlane,
-                        centre = centre,
-                        radius = radius,
-                        normal = normal,
-                        colour = ORE_COLOUR,
-                    )
-                }
-            }
-        }
 
         val tunnelRadius = state.tunnel.radiusMetres
         val sampleSpacing = max(0.8f, tunnelRadius * 0.55f)
@@ -371,14 +345,10 @@ internal object MineMeshBuilder {
         val output = FloatAccumulator(points.size * TUNNEL_OVERVIEW_RING_SEGMENTS * 18)
         for (index in 0 until points.lastIndex) {
             val midpoint = MineWorldGeometry.interpolate(points[index], points[index + 1], 0.5f)
-            val colour = if (
-                state.oreBodyDiscovered &&
-                MineWorldGeometry.oreMargin(midpoint, state.oreBody) >= -(radius * 0.65f)
-            ) {
-                ORE_COLOUR
-            } else {
-                TUNNEL_COLOUR
+            val touchesDiscoveredOre = state.discoveredOreBodies.any { body ->
+                MineWorldGeometry.oreMargin(midpoint, body) >= -(radius * 0.65f)
             }
+            val colour = if (touchesDiscoveredOre) ORE_COLOUR else TUNNEL_COLOUR
             for (ringIndex in 0 until TUNNEL_OVERVIEW_RING_SEGMENTS) {
                 val nextRing = (ringIndex + 1) % TUNNEL_OVERVIEW_RING_SEGMENTS
                 val a = rings[index][ringIndex]
@@ -652,8 +622,9 @@ internal object MineMeshBuilder {
         tunnelSegments: Collection<TunnelSegment>,
         gridStepMetres: Float,
     ): FloatArray {
-        val oreAtWall = state.oreBodyDiscovered &&
-            MineWorldGeometry.oreMargin(point, state.oreBody) >= -(gridStepMetres * 0.75f)
+        val oreAtWall = state.discoveredOreBodies.any { body ->
+            MineWorldGeometry.oreMargin(point, body) >= -(gridStepMetres * 0.75f)
+        }
         val activeFace = MineWorldGeometry.distance(point, state.tunnel.end) <=
             state.tunnel.radiusMetres * 1.35f
         return when {
