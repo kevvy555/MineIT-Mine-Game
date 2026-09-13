@@ -10,17 +10,29 @@ class MineWorldGeometryPerformanceTest {
         val near = OreBody(
             id = "near",
             type = OreType.COPPER,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 8f), 5f),
-                OreBodyNode(MinePoint3D(0f, 0f, 20f), 5f),
+            geometry = DisseminatedStockworkGeometry(
+                centre = MinePoint3D(0f, 0f, 14f),
+                strikeDegrees = 0f,
+                dipDegrees = 0f,
+                halfLengthMetres = 5f,
+                halfWidthMetres = 5f,
+                halfHeightMetres = 7f,
+                irregularityMetres = 0f,
+                phaseRadians = 0f,
             ),
         )
         val far = OreBody(
             id = "far",
             type = OreType.GOLD,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(80f, 80f, 8f), 5f),
-                OreBodyNode(MinePoint3D(80f, 80f, 20f), 5f),
+            geometry = DisseminatedStockworkGeometry(
+                centre = MinePoint3D(80f, 80f, 14f),
+                strikeDegrees = 0f,
+                dipDegrees = 0f,
+                halfLengthMetres = 5f,
+                halfWidthMetres = 5f,
+                halfHeightMetres = 7f,
+                irregularityMetres = 0f,
+                phaseRadians = 0f,
             ),
         )
         var diagnostics: ExcavationClassificationDiagnostics? = null
