@@ -14,7 +14,6 @@ data class ExcavationMaterialBreakdown(
         get() = oreVolumeCubicMetresByBodyId.values.sum()
 }
 
-
 data class ExcavationClassificationDiagnostics(
     val elapsedMs: Float,
     val candidateSamples: Int,
@@ -22,10 +21,22 @@ data class ExcavationClassificationDiagnostics(
     val nearbyExistingSegments: Int,
     val existingTunnelChecks: Int,
     val oreFieldEvaluations: Int,
+    val nearbyOreBodies: Int = 0,
+    val tunnelBoundsChecks: Int = 0,
 )
 
 object MineWorldGeometry {
     private const val MATERIAL_SAMPLE_SPACING_METRES = 0.45f
+
+    private data class BoundedTunnelSegment(
+        val segment: TunnelSegment,
+        val minX: Float,
+        val maxX: Float,
+        val minY: Float,
+        val maxY: Float,
+        val minZ: Float,
+        val maxZ: Float,
+    )
 
     fun distance(a: MinePoint3D, b: MinePoint3D): Float {
         val dx = a.x - b.x
@@ -49,11 +60,15 @@ object MineWorldGeometry {
     fun oreMargin(point: MinePoint3D, oreBody: List<OreBodyNode>): Float {
         if (oreBody.size < 2) return Float.NEGATIVE_INFINITY
         var best = Float.NEGATIVE_INFINITY
-        oreBody.zipWithNext().forEach { (start, end) ->
+        var index = 0
+        while (index < oreBody.lastIndex) {
+            val start = oreBody[index]
+            val end = oreBody[index + 1]
             val t = closestParameter(point, start.centre, end.centre)
             val closest = interpolate(start.centre, end.centre, t)
             val radius = start.radiusMetres + ((end.radiusMetres - start.radiusMetres) * t)
             best = max(best, radius - distance(point, closest))
+            index += 1
         }
         return best
     }
@@ -119,12 +134,30 @@ object MineWorldGeometry {
         .toFloat()
 
     /**
+     * Conservative broad-phase selection for ore bodies that could intersect the new cutter sweep.
+     * It cannot exclude a genuinely intersecting body, but avoids evaluating distant deposits for
+     * every 0.45m material sample.
+     */
+    fun oreBodiesNearSegment(
+        start: MinePoint3D,
+        end: MinePoint3D,
+        tunnelRadiusMetres: Float,
+        oreBodies: List<OreBody>,
+    ): List<OreBody> = oreBodies.filter { body ->
+        oreBodyBoundsOverlapSegment(body, start, end, tunnelRadiusMetres)
+    }
+
+    /**
      * Partitions only the material that is newly removed by [start]-[end].
      *
      * Every accepted sample is classified exactly once: either as one ore body or as waste rock.
      * Samples inside an existing finite tunnel cylinder are ignored, so crossing an old working
      * cannot create material for a second time. The returned components therefore always add back
      * to [ExcavationMaterialBreakdown.newExcavatedVolumeCubicMetres].
+     *
+     * The broad phases deliberately remain conservative: ore is first culled by deposit bounds and
+     * historical tunnel segments by sweep bounds, then each sample uses precomputed expanded AABBs
+     * before the more expensive finite-cylinder test. This changes query cost, not mining truth.
      */
     fun classifyNewExcavation(
         start: MinePoint3D,
@@ -185,10 +218,20 @@ object MineWorldGeometry {
                 padding = tunnelRadiusMetres * 2f,
             )
         }
+        val boundedExistingSegments = nearbyExistingSegments.map { segment ->
+            boundedTunnelSegment(segment, tunnelRadiusMetres)
+        }
+        val nearbyOreBodies = oreBodiesNearSegment(
+            start = start,
+            end = end,
+            tunnelRadiusMetres = tunnelRadiusMetres,
+            oreBodies = oreBodies,
+        )
 
         val sampleVolume = cylinderVolume(tunnelRadiusMetres, length) /
             (longitudinalSteps * crossOffsets.size).toFloat()
         var newSampleCount = 0
+        var tunnelBoundsChecks = 0
         var existingTunnelChecks = 0
         var oreFieldEvaluations = 0
         val oreSamplesByBodyId = mutableMapOf<String, Int>()
@@ -208,9 +251,11 @@ object MineWorldGeometry {
                 if (sample.z < 0f) return@forEach
 
                 var alreadyExcavated = false
-                for (existing in nearbyExistingSegments) {
+                for (bounded in boundedExistingSegments) {
+                    tunnelBoundsChecks += 1
+                    if (!bounded.contains(sample)) continue
                     existingTunnelChecks += 1
-                    if (isInsideFiniteCylinder(sample, existing, tunnelRadiusMetres)) {
+                    if (isInsideFiniteCylinder(sample, bounded.segment, tunnelRadiusMetres)) {
                         alreadyExcavated = true
                         break
                     }
@@ -221,7 +266,7 @@ object MineWorldGeometry {
 
                 var bestBodyId: String? = null
                 var bestMargin = 0f
-                oreBodies.forEach { body ->
+                nearbyOreBodies.forEach { body ->
                     oreFieldEvaluations += 1
                     val margin = oreMargin(sample, body.nodes)
                     if (margin > bestMargin) {
@@ -249,6 +294,8 @@ object MineWorldGeometry {
                 nearbyExistingSegments = nearbyExistingSegments.size,
                 existingTunnelChecks = existingTunnelChecks,
                 oreFieldEvaluations = oreFieldEvaluations,
+                nearbyOreBodies = nearbyOreBodies.size,
+                tunnelBoundsChecks = tunnelBoundsChecks,
             ),
         )
         return ExcavationMaterialBreakdown(
@@ -292,7 +339,10 @@ object MineWorldGeometry {
         for (step in 0..steps) {
             val t = step.toFloat() / steps.toFloat()
             val sample = interpolate(start, end, t)
-            oreBody.zipWithNext().forEachIndexed { index, (oreStart, oreEnd) ->
+            var index = 0
+            while (index < oreBody.lastIndex) {
+                val oreStart = oreBody[index]
+                val oreEnd = oreBody[index + 1]
                 val oreT = closestParameter(sample, oreStart.centre, oreEnd.centre)
                 val closest = interpolate(oreStart.centre, oreEnd.centre, oreT)
                 val oreRadius = oreStart.radiusMetres +
@@ -300,6 +350,7 @@ object MineWorldGeometry {
                 if (distance(sample, closest) <= oreRadius + tunnelRadiusMetres) {
                     exposed += index
                 }
+                index += 1
             }
         }
 
@@ -320,6 +371,53 @@ object MineWorldGeometry {
         y = start.y + ((end.y - start.y) * t),
         z = start.z + ((end.z - start.z) * t),
     )
+
+    private fun boundedTunnelSegment(
+        segment: TunnelSegment,
+        radiusMetres: Float,
+    ): BoundedTunnelSegment = BoundedTunnelSegment(
+        segment = segment,
+        minX = min(segment.start.x, segment.end.x) - radiusMetres,
+        maxX = max(segment.start.x, segment.end.x) + radiusMetres,
+        minY = min(segment.start.y, segment.end.y) - radiusMetres,
+        maxY = max(segment.start.y, segment.end.y) + radiusMetres,
+        minZ = min(segment.start.z, segment.end.z) - radiusMetres,
+        maxZ = max(segment.start.z, segment.end.z) + radiusMetres,
+    )
+
+    private fun BoundedTunnelSegment.contains(point: MinePoint3D): Boolean =
+        point.x >= minX && point.x <= maxX &&
+            point.y >= minY && point.y <= maxY &&
+            point.z >= minZ && point.z <= maxZ
+
+    private fun oreBodyBoundsOverlapSegment(
+        body: OreBody,
+        start: MinePoint3D,
+        end: MinePoint3D,
+        padding: Float,
+    ): Boolean {
+        if (body.nodes.isEmpty()) return false
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        var minZ = Float.POSITIVE_INFINITY
+        var maxZ = Float.NEGATIVE_INFINITY
+        body.nodes.forEach { node ->
+            minX = min(minX, node.centre.x - node.radiusMetres)
+            maxX = max(maxX, node.centre.x + node.radiusMetres)
+            minY = min(minY, node.centre.y - node.radiusMetres)
+            maxY = max(maxY, node.centre.y + node.radiusMetres)
+            minZ = min(minZ, node.centre.z - node.radiusMetres)
+            maxZ = max(maxZ, node.centre.z + node.radiusMetres)
+        }
+        return max(start.x, end.x) + padding >= minX &&
+            min(start.x, end.x) - padding <= maxX &&
+            max(start.y, end.y) + padding >= minY &&
+            min(start.y, end.y) - padding <= maxY &&
+            max(start.z, end.z) + padding >= minZ &&
+            min(start.z, end.z) - padding <= maxZ
+    }
 
     private fun isInsideFiniteCylinder(
         point: MinePoint3D,
