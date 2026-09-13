@@ -65,11 +65,6 @@ data class TunnelGeometry(
         get() = points.zipWithNext { start, end -> TunnelSegment(start, end) }
 }
 
-data class OreBodyNode(
-    val centre: MinePoint3D,
-    val radiusMetres: Float,
-)
-
 data class MineWorldState(
     val tunnel: TunnelGeometry = MineWorldContent.initialTunnel,
     val extent: ChunkExtent = MineWorldContent.initialExtent,
@@ -106,13 +101,6 @@ data class MineWorldState(
 
     val discoveredOreBodies: List<OreBody>
         get() = oreBodies.filter { it.id in discoveredOreBodyIds }
-
-    /**
-     * Compatibility view used by the tunnel-wall colour pass. [oreBodies] are immutable original
-     * geology; remaining material is derived by subtracting excavation via MineWorldGeometry.
-     */
-    val oreBody: List<OreBodyNode>
-        get() = discoveredOreBodies.firstOrNull()?.nodes.orEmpty()
 
     /**
      * While stopped, the steering slider previews the direction that will be committed when
