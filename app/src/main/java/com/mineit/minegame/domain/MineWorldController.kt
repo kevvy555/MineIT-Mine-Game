@@ -20,6 +20,7 @@ object MineWorldController {
     private const val MAX_TICK_SECONDS = 0.35f
     private const val SURFACE_EPSILON_METRES = 0.03f
     private const val MIN_SURFACE_ENTRY_ANGLE_DEGREES = 2f
+    private const val MIN_MINED_VOLUME_CUBIC_METRES = 0.0001f
 
     fun setSteering(state: MineWorldState, steering: Float): MineWorldState =
         state.copy(steering = steering.coerceIn(MIN_STEERING, MAX_STEERING))
@@ -116,28 +117,57 @@ object MineWorldController {
             )
         }
 
-        val tunnel = state.tunnel.copy(points = state.tunnel.points + target)
-        val extent = expandExtent(state.extent, target)
-        val volume = state.excavatedVolumeCubicMetres +
-            cylinderVolume(state.tunnel.radiusMetres, segmentLength)
+        val material = MineWorldGeometry.classifyNewExcavation(
+            start = start,
+            end = target,
+            tunnelRadiusMetres = state.tunnel.radiusMetres,
+            existingTunnelSegments = state.tunnel.segments,
+            oreBodies = state.oreBodies,
+        )
+        val minedBodyIds = material.oreVolumeCubicMetresByBodyId
+            .filterValues { it > MIN_MINED_VOLUME_CUBIC_METRES }
+            .keys
+
         val newlyDiscoveredIds = state.oreBodies.asSequence()
             .filterNot { it.id in state.discoveredOreBodyIds }
             .filter { body ->
-                MineWorldGeometry.exposedOreSegmentsForSegment(
-                    start = start,
-                    end = target,
-                    tunnelRadiusMetres = state.tunnel.radiusMetres,
-                    oreBody = body.nodes,
-                ).isNotEmpty()
+                body.id in minedBodyIds ||
+                    MineWorldGeometry.exposedOreSegmentsForSegment(
+                        start = start,
+                        end = target,
+                        tunnelRadiusMetres = state.tunnel.radiusMetres,
+                        oreBody = body.nodes,
+                    ).isNotEmpty()
             }
             .map { it.id }
             .toSet()
 
+        val bodyTypesById = state.oreBodies.associate { it.id to it.type }
+        val minedOreByType = state.minedOreVolumeCubicMetresByType.toMutableMap()
+        material.oreVolumeCubicMetresByBodyId.forEach { (bodyId, volume) ->
+            val type = bodyTypesById[bodyId] ?: return@forEach
+            minedOreByType[type] = (minedOreByType[type] ?: 0f) + volume
+        }
+
+        val depletedOreBodies = MineWorldGeometry.depleteOreBodies(
+            oreBodies = state.oreBodies,
+            start = start,
+            end = target,
+            tunnelRadiusMetres = state.tunnel.radiusMetres,
+            minedBodyIds = minedBodyIds,
+        )
+
+        val tunnel = state.tunnel.copy(points = state.tunnel.points + target)
+        val extent = expandExtent(state.extent, target)
+
         return state.copy(
             tunnel = tunnel,
             extent = extent,
+            oreBodies = depletedOreBodies,
             headingDegrees = heading,
-            excavatedVolumeCubicMetres = volume,
+            wasteRockVolumeCubicMetres =
+                state.wasteRockVolumeCubicMetres + material.wasteRockVolumeCubicMetres,
+            minedOreVolumeCubicMetresByType = minedOreByType,
             discoveredOreBodyIds = state.discoveredOreBodyIds + newlyDiscoveredIds,
             isDigging = state.isDigging && !exitsSurface,
         )

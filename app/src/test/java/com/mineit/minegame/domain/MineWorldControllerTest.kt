@@ -12,6 +12,8 @@ class MineWorldControllerTest {
 
         assertEquals(1, state.tunnel.points.size)
         assertEquals(0f, state.excavatedVolumeCubicMetres, 0.001f)
+        assertEquals(0f, state.wasteRockVolumeCubicMetres, 0.001f)
+        assertEquals(0f, state.totalMinedOreVolumeCubicMetres, 0.001f)
         assertFalse(state.oreBodyDiscovered)
         assertTrue(state.discoveredOreBodyIds.isEmpty())
         assertTrue(MineWorldGeometry.solidMargin(MinePoint3D(0f, 0f, 4f), state.bounds, state.tunnel) > 0f)
@@ -27,6 +29,131 @@ class MineWorldControllerTest {
         assertTrue(dug.tunnel.end.z > 0f)
         assertTrue(dug.excavatedVolumeCubicMetres > 0f)
         assertTrue(dug.wasteRockTonnes > 0f)
+        assertEquals(
+            dug.excavatedVolumeCubicMetres,
+            dug.wasteRockVolumeCubicMetres + dug.totalMinedOreVolumeCubicMetres,
+            0.001f,
+        )
+    }
+
+    @Test
+    fun excavationPartitionsOreAndWasteWithoutDoubleCountingMaterial() {
+        val ore = OreBody(
+            id = "test-gold",
+            type = OreType.GOLD,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 8f),
+                OreBodyNode(MinePoint3D(0f, 0f, 20f), 8f),
+            ),
+        )
+        var state = MineWorldState(
+            oreBodies = listOf(ore),
+            verticalAngleDegrees = 90f,
+        )
+        state = MineWorldController.startDigging(state)
+        repeat(8) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        val minedGold = state.minedOreVolumeCubicMetres(OreType.GOLD)
+        assertTrue(minedGold > 0f)
+        assertEquals(
+            state.excavatedVolumeCubicMetres,
+            state.wasteRockVolumeCubicMetres + minedGold,
+            0.001f,
+        )
+        assertEquals(
+            state.wasteRockVolumeCubicMetres *
+                MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE,
+            state.wasteRockTonnes,
+            0.001f,
+        )
+        assertTrue(
+            "ore must not also be counted as waste",
+            state.wasteRockVolumeCubicMetres < state.excavatedVolumeCubicMetres,
+        )
+    }
+
+    @Test
+    fun crossingAnExistingWorkingDoesNotCreateMaterialTwice() {
+        val segment = TunnelSegment(
+            start = MinePoint3D(0f, 0f, 10f),
+            end = MinePoint3D(0f, 0f, 12f),
+        )
+
+        val firstPass = MineWorldGeometry.classifyNewExcavation(
+            start = segment.start,
+            end = segment.end,
+            tunnelRadiusMetres = 3.2f,
+            existingTunnelSegments = emptyList(),
+            oreBodies = emptyList(),
+        )
+        val repeatedPass = MineWorldGeometry.classifyNewExcavation(
+            start = segment.start,
+            end = segment.end,
+            tunnelRadiusMetres = 3.2f,
+            existingTunnelSegments = listOf(segment),
+            oreBodies = emptyList(),
+        )
+
+        assertTrue(firstPass.newExcavatedVolumeCubicMetres > 0f)
+        assertEquals(0f, repeatedPass.newExcavatedVolumeCubicMetres, 0.001f)
+        assertEquals(0f, repeatedPass.wasteRockVolumeCubicMetres, 0.001f)
+        assertEquals(0f, repeatedPass.oreVolumeCubicMetres, 0.001f)
+    }
+
+    @Test
+    fun narrowVeinShrinksWhereTheCutterPasses() {
+        val ore = OreBody(
+            id = "test-gold",
+            type = OreType.GOLD,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 1.6f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 1.6f),
+            ),
+        )
+        var state = MineWorldState(
+            oreBodies = listOf(ore),
+            verticalAngleDegrees = 90f,
+        )
+        state = MineWorldController.startDigging(state)
+        repeat(12) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        val remaining = state.oreBodies.single().nodes
+        assertTrue(state.minedOreVolumeCubicMetres(OreType.GOLD) > 0f)
+        assertTrue(remaining.size > ore.nodes.size)
+        assertTrue(
+            "the cutter should consume narrow ore stations rather than leaving the original vein",
+            remaining.any { node -> node.centre.z in 2f..8f && node.radiusMetres == 0f },
+        )
+    }
+
+    @Test
+    fun broadVeinIsReducedRatherThanEntirelyDeletedByOnePass() {
+        val ore = OreBody(
+            id = "test-copper",
+            type = OreType.COPPER,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 8f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 8f),
+            ),
+        )
+        var state = MineWorldState(
+            oreBodies = listOf(ore),
+            verticalAngleDegrees = 90f,
+        )
+        state = MineWorldController.startDigging(state)
+        repeat(12) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        val affected = state.oreBodies.single().nodes
+            .filter { it.centre.z in 2f..8f }
+        assertTrue(state.minedOreVolumeCubicMetres(OreType.COPPER) > 0f)
+        assertTrue(affected.any { it.radiusMetres > 0.1f && it.radiusMetres < 8f })
+        assertTrue(affected.any { it.radiusMetres > 0f })
     }
 
     @Test
@@ -181,6 +308,7 @@ class MineWorldControllerTest {
         assertTrue(state.oreBodyDiscovered)
         assertTrue("gold-1" in state.discoveredOreBodyIds)
         assertTrue(state.discoveredOreBodies.any { it.type == OreType.GOLD })
+        assertTrue(state.minedOreVolumeCubicMetres(OreType.GOLD) > 0f)
     }
 
     @Test
@@ -201,13 +329,13 @@ class MineWorldControllerTest {
     }
 
     @Test
-    fun incrementalTypedDiscoveryMatchesFullTunnelScan() {
+    fun incrementalTypedDiscoveryMatchesOriginalGeologyTunnelScan() {
         var state = MineWorldController.startDigging(MineWorldState())
         repeat(45) {
             state = MineWorldController.tick(state, 0.25f)
         }
 
-        val fullScan = state.oreBodies
+        val fullScan = MineWorldContent.oreBodies
             .filter { MineWorldGeometry.exposedOreSegments(state.tunnel, it.nodes).isNotEmpty() }
             .map { it.id }
             .toSet()

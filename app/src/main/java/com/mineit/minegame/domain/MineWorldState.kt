@@ -80,7 +80,8 @@ data class MineWorldState(
     val steering: Float = 0f,
     val digSpeedMultiplier: Float = 1f,
     val isDigging: Boolean = false,
-    val excavatedVolumeCubicMetres: Float = 0f,
+    val wasteRockVolumeCubicMetres: Float = 0f,
+    val minedOreVolumeCubicMetresByType: Map<OreType, Float> = emptyMap(),
 ) {
     val bounds: MineWorldBounds
         get() = extent.bounds(MineWorldController.CHUNK_SIZE_METRES)
@@ -88,8 +89,17 @@ data class MineWorldState(
     val depthMetres: Float
         get() = tunnel.end.z.coerceAtLeast(0f)
 
+    val totalMinedOreVolumeCubicMetres: Float
+        get() = minedOreVolumeCubicMetresByType.values.sum()
+
+    val excavatedVolumeCubicMetres: Float
+        get() = wasteRockVolumeCubicMetres + totalMinedOreVolumeCubicMetres
+
     val wasteRockTonnes: Float
-        get() = excavatedVolumeCubicMetres * MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE
+        get() = wasteRockVolumeCubicMetres * MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE
+
+    fun minedOreVolumeCubicMetres(type: OreType): Float =
+        minedOreVolumeCubicMetresByType[type] ?: 0f
 
     val oreBodyDiscovered: Boolean
         get() = discoveredOreBodyIds.isNotEmpty()
@@ -98,10 +108,9 @@ data class MineWorldState(
         get() = oreBodies.filter { it.id in discoveredOreBodyIds }
 
     /**
-     * The original single-body POC renderer still asks for one body when colouring detailed
-     * tunnel walls. This derived view is not geology state: typed [oreBodies] remain canonical.
-     * Full typed bodies are rendered separately and this simply preserves wall colouring for the
-     * first discovered deposit until that small renderer path is removed.
+     * The detailed tunnel-wall renderer still asks for one body when colouring the wall. Typed
+     * [oreBodies] remain canonical; because they are depleted by excavation this view also reflects
+     * the remaining material rather than the original seeded body.
      */
     val oreBody: List<OreBodyNode>
         get() = discoveredOreBodies.firstOrNull()?.nodes.orEmpty()
