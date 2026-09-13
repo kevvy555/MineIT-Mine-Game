@@ -11,15 +11,66 @@ import kotlin.math.max
 import kotlin.math.min
 
 internal object OreMeshBuilder {
-    private const val BODY_GRID_STEP_METRES = 0.75f
+    /** 12m chunks divide cleanly into 0.6m cells, keeping adjacent chunk sampling aligned. */
+    const val BODY_GRID_STEP_METRES = 0.6f
     private const val SLICE_GRID_STEP_METRES = 0.45f
     private const val ORE_SLICE_OFFSET_METRES = 0.065f
+    private const val WORLD_EDGE_EPSILON_METRES = 0.001f
 
+    /**
+     * Compatibility/helper path used by tests. Runtime rendering keeps these meshes chunked and
+     * uploads them independently so a local cutter pass never rebuilds an entire deposit.
+     */
     fun buildDiscovered(state: MineWorldState): MineMesh = combine(
-        state.discoveredOreBodies.mapNotNull { body ->
-            buildRemainingBodyMesh(state, body).takeIf { it.vertexCount > 0 }
+        state.discoveredOreBodies.flatMap { body ->
+            OreChunkPlanner.chunksForBody(body, state.bounds)
+                .sortedWith(compareBy<OreChunkKey>({ it.z }, { it.y }, { it.x }))
+                .mapNotNull { key ->
+                    buildChunk(state, body, key).takeIf { it.vertexCount > 0 }
+                }
         },
     )
+
+    /** Builds one disposable remaining-ore cache chunk from canonical deposit - excavation fields. */
+    fun buildChunk(
+        state: MineWorldState,
+        body: OreBody,
+        key: OreChunkKey,
+        gridStepMetres: Float = BODY_GRID_STEP_METRES,
+    ): MineMesh {
+        if (key.bodyId != body.id) return emptyMesh()
+        val originalBounds = OreChunkPlanner.bodyBounds(body) ?: return emptyMesh()
+        val coreBounds = OreChunkPlanner.intersect(key.bounds(), state.bounds) ?: return emptyMesh()
+        if (OreChunkPlanner.intersect(coreBounds, originalBounds) == null) return emptyMesh()
+
+        // Internal ore-chunk boundaries stay exact and aligned. Only true generated-world edges get
+        // a one-cell halo so the scalar field can close the ore surface against unexplored space.
+        val samplingBounds = worldEdgeSamplingBounds(
+            core = coreBounds,
+            world = state.bounds,
+            halo = gridStepMetres,
+        )
+        val segments = relevantTunnelSegments(
+            state.tunnel.segments,
+            samplingBounds,
+            state.tunnel.radiusMetres + gridStepMetres,
+        )
+        return ScalarFieldMesher.buildVolume(
+            bounds = samplingBounds,
+            gridStepMetres = gridStepMetres,
+            colour = colourFor(body.type),
+        ) { point ->
+            min(
+                MineWorldGeometry.remainingOreMargin(
+                    point = point,
+                    oreBody = body,
+                    tunnelRadiusMetres = state.tunnel.radiusMetres,
+                    excavationSegments = segments,
+                ),
+                boundsMargin(point, state.bounds),
+            )
+        }
+    }
 
     fun buildSlice(
         state: MineWorldState,
@@ -33,10 +84,17 @@ internal object OreMeshBuilder {
         val normal = capNormal(axis, flipped)
         val renderPlane = clip + axisCoordinate(normal, axis) * ORE_SLICE_OFFSET_METRES
         return combine(bodies.mapNotNull { body ->
-            val originalBounds = bodyBounds(body) ?: return@mapNotNull null
-            if (clip < axisMinimum(originalBounds, axis) || clip > axisMaximum(originalBounds, axis)) return@mapNotNull null
-            val planeBounds = intersectBounds(originalBounds, state.bounds) ?: return@mapNotNull null
-            val segments = relevantTunnelSegments(state.tunnel.segments, originalBounds, state.tunnel.radiusMetres)
+            val originalBounds = OreChunkPlanner.bodyBounds(body) ?: return@mapNotNull null
+            if (clip < axisMinimum(originalBounds, axis) || clip > axisMaximum(originalBounds, axis)) {
+                return@mapNotNull null
+            }
+            val planeBounds = OreChunkPlanner.intersect(originalBounds, state.bounds)
+                ?: return@mapNotNull null
+            val segments = relevantTunnelSegments(
+                state.tunnel.segments,
+                planeBounds,
+                state.tunnel.radiusMetres,
+            )
             ScalarFieldMesher.buildSlice(
                 bounds = planeBounds,
                 axis = axis,
@@ -46,55 +104,33 @@ internal object OreMeshBuilder {
                 normal = normal,
                 colour = colourFor(body.type),
             ) { point ->
-                MineWorldGeometry.remainingOreMargin(point, body, state.tunnel.radiusMetres, segments)
+                MineWorldGeometry.remainingOreMargin(
+                    point = point,
+                    oreBody = body,
+                    tunnelRadiusMetres = state.tunnel.radiusMetres,
+                    excavationSegments = segments,
+                )
             }.takeIf { it.vertexCount > 0 }
         })
     }
 
-    private fun buildRemainingBodyMesh(state: MineWorldState, body: OreBody): MineMesh {
-        val originalBounds = bodyBounds(body) ?: return emptyMesh()
-        val samplingBounds = intersectBounds(
-            expandBounds(originalBounds, BODY_GRID_STEP_METRES),
-            expandBounds(state.bounds, BODY_GRID_STEP_METRES),
-        ) ?: return emptyMesh()
-        val segments = relevantTunnelSegments(
-            state.tunnel.segments,
-            originalBounds,
-            state.tunnel.radiusMetres + BODY_GRID_STEP_METRES,
-        )
-        return ScalarFieldMesher.buildVolume(
-            bounds = samplingBounds,
-            gridStepMetres = BODY_GRID_STEP_METRES,
-            colour = colourFor(body.type),
-        ) { point ->
-            min(
-                MineWorldGeometry.remainingOreMargin(point, body, state.tunnel.radiusMetres, segments),
-                boundsMargin(point, state.bounds),
-            )
-        }
-    }
-
-    private fun bodyBounds(body: OreBody): MineWorldBounds? {
-        if (body.nodes.isEmpty()) return null
-        var minX = Float.POSITIVE_INFINITY
-        var maxX = Float.NEGATIVE_INFINITY
-        var minY = Float.POSITIVE_INFINITY
-        var maxY = Float.NEGATIVE_INFINITY
-        var minZ = Float.POSITIVE_INFINITY
-        var maxZ = Float.NEGATIVE_INFINITY
-        body.nodes.forEach { node ->
-            minX = min(minX, node.centre.x - node.radiusMetres)
-            maxX = max(maxX, node.centre.x + node.radiusMetres)
-            minY = min(minY, node.centre.y - node.radiusMetres)
-            maxY = max(maxY, node.centre.y + node.radiusMetres)
-            minZ = min(minZ, node.centre.z - node.radiusMetres)
-            maxZ = max(maxZ, node.centre.z + node.radiusMetres)
-        }
-        return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
-    }
+    private fun worldEdgeSamplingBounds(
+        core: MineWorldBounds,
+        world: MineWorldBounds,
+        halo: Float,
+    ): MineWorldBounds = MineWorldBounds(
+        minX = if (core.minX <= world.minX + WORLD_EDGE_EPSILON_METRES) core.minX - halo else core.minX,
+        maxX = if (core.maxX >= world.maxX - WORLD_EDGE_EPSILON_METRES) core.maxX + halo else core.maxX,
+        minY = if (core.minY <= world.minY + WORLD_EDGE_EPSILON_METRES) core.minY - halo else core.minY,
+        maxY = if (core.maxY >= world.maxY - WORLD_EDGE_EPSILON_METRES) core.maxY + halo else core.maxY,
+        minZ = if (core.minZ <= world.minZ + WORLD_EDGE_EPSILON_METRES) core.minZ - halo else core.minZ,
+        maxZ = if (core.maxZ >= world.maxZ - WORLD_EDGE_EPSILON_METRES) core.maxZ + halo else core.maxZ,
+    )
 
     private fun relevantTunnelSegments(
-        segments: Collection<TunnelSegment>, bounds: MineWorldBounds, padding: Float,
+        segments: Collection<TunnelSegment>,
+        bounds: MineWorldBounds,
+        padding: Float,
     ): List<TunnelSegment> = segments.filter { segment ->
         max(segment.start.x, segment.end.x) + padding >= bounds.minX &&
             min(segment.start.x, segment.end.x) - padding <= bounds.maxX &&
@@ -105,27 +141,13 @@ internal object OreMeshBuilder {
     }
 
     private fun boundsMargin(point: MinePoint3D, bounds: MineWorldBounds) = minOf(
-        point.x - bounds.minX, bounds.maxX - point.x,
-        point.y - bounds.minY, bounds.maxY - point.y,
-        point.z - bounds.minZ, bounds.maxZ - point.z,
+        point.x - bounds.minX,
+        bounds.maxX - point.x,
+        point.y - bounds.minY,
+        bounds.maxY - point.y,
+        point.z - bounds.minZ,
+        bounds.maxZ - point.z,
     )
-
-    private fun expandBounds(bounds: MineWorldBounds, amount: Float) = MineWorldBounds(
-        bounds.minX - amount, bounds.maxX + amount,
-        bounds.minY - amount, bounds.maxY + amount,
-        bounds.minZ - amount, bounds.maxZ + amount,
-    )
-
-    private fun intersectBounds(a: MineWorldBounds, b: MineWorldBounds): MineWorldBounds? {
-        val minX = max(a.minX, b.minX)
-        val maxX = min(a.maxX, b.maxX)
-        val minY = max(a.minY, b.minY)
-        val maxY = min(a.maxY, b.maxY)
-        val minZ = max(a.minZ, b.minZ)
-        val maxZ = min(a.maxZ, b.maxZ)
-        if (minX >= maxX || minY >= maxY || minZ >= maxZ) return null
-        return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
-    }
 
     private fun axisMinimum(bounds: MineWorldBounds, axis: ClipAxis) = when (axis) {
         ClipAxis.X -> bounds.minX
