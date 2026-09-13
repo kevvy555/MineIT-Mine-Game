@@ -13,8 +13,8 @@ android {
         applicationId = "com.mineit.minegame"
         minSdk = 26
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.10.1"
+        versionCode = 15
+        versionName = "0.11.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
