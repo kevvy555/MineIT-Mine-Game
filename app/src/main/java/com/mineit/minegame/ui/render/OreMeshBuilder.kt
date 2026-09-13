@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  *
  * Discovered deposits keep a closed, opaque body surface so normal gameplay can inspect a known
  * connected vein. SEE ORE never uses that body surface for undiscovered deposits: it only adds
- * solid typed cross-sections to the active CT plane.
+ * solid typed cross-sections to active CT planes.
  */
 internal object OreMeshBuilder {
     private const val RING_SEGMENTS = 12
@@ -39,8 +39,8 @@ internal object OreMeshBuilder {
 
     /**
      * Builds only filled CT cross-sections. With [showAll] enabled, undiscovered deposits become
-     * visible solely where the current X/Y/Z slice intersects them; intact unsliced rock remains
-     * opaque and contains no x-ray ore overlay.
+     * visible solely where the requested X/Y/Z slice intersects them. Cross-sections are clipped to
+     * the currently generated geological bounds, so seeded ore beyond explored rock is never shown.
      */
     fun buildSlice(
         state: MineWorldState,
@@ -168,51 +168,129 @@ internal object OreMeshBuilder {
         if (crossRadius < 0.06f) return
 
         val projected = withAxis(centre, axis, planeValue)
-        if (!discOverlapsBounds(projected, crossRadius, axis, bounds)) return
-
-        val u = when (axis) {
-            ClipAxis.X -> MinePoint3D(0f, 1f, 0f)
-            ClipAxis.Y -> MinePoint3D(1f, 0f, 0f)
-            ClipAxis.Z -> MinePoint3D(1f, 0f, 0f)
-        }
-        val v = when (axis) {
-            ClipAxis.X -> MinePoint3D(0f, 0f, 1f)
-            ClipAxis.Y -> MinePoint3D(0f, 0f, 1f)
-            ClipAxis.Z -> MinePoint3D(0f, 1f, 0f)
-        }
-
+        val planeCentre = toPlanePoint(projected, axis)
+        val polygon = ArrayList<PlanePoint>(SLICE_DISC_SEGMENTS)
         for (index in 0 until SLICE_DISC_SEGMENTS) {
-            val angleA = 2.0 * PI * index.toDouble() / SLICE_DISC_SEGMENTS.toDouble()
-            val angleB = 2.0 * PI * (index + 1).toDouble() / SLICE_DISC_SEGMENTS.toDouble()
-            val a = combine(
-                projected,
-                u to (cos(angleA).toFloat() * crossRadius),
-                v to (sin(angleA).toFloat() * crossRadius),
+            val angle = 2.0 * PI * index.toDouble() / SLICE_DISC_SEGMENTS.toDouble()
+            polygon += PlanePoint(
+                u = planeCentre.u + (cos(angle).toFloat() * crossRadius),
+                v = planeCentre.v + (sin(angle).toFloat() * crossRadius),
             )
-            val b = combine(
-                projected,
-                u to (cos(angleB).toFloat() * crossRadius),
-                v to (sin(angleB).toFloat() * crossRadius),
+        }
+
+        val clipped = clipPolygonToBounds(polygon, planeBounds(axis, bounds))
+        if (clipped.size < 3) return
+
+        val anchor = fromPlanePoint(clipped[0], axis, planeValue)
+        for (index in 1 until clipped.lastIndex) {
+            output.appendTriangle(
+                anchor,
+                fromPlanePoint(clipped[index], axis, planeValue),
+                fromPlanePoint(clipped[index + 1], axis, planeValue),
+                normal,
+                colour,
             )
-            output.appendTriangle(projected, a, b, normal, colour)
         }
     }
 
-    private fun discOverlapsBounds(
-        centre: MinePoint3D,
-        radius: Float,
-        axis: ClipAxis,
-        bounds: MineWorldBounds,
-    ): Boolean = when (axis) {
-        ClipAxis.X ->
-            centre.y + radius >= bounds.minY && centre.y - radius <= bounds.maxY &&
-                centre.z + radius >= bounds.minZ && centre.z - radius <= bounds.maxZ
-        ClipAxis.Y ->
-            centre.x + radius >= bounds.minX && centre.x - radius <= bounds.maxX &&
-                centre.z + radius >= bounds.minZ && centre.z - radius <= bounds.maxZ
-        ClipAxis.Z ->
-            centre.x + radius >= bounds.minX && centre.x - radius <= bounds.maxX &&
-                centre.y + radius >= bounds.minY && centre.y - radius <= bounds.maxY
+    private data class PlanePoint(
+        val u: Float,
+        val v: Float,
+    )
+
+    private data class PlaneBounds(
+        val minU: Float,
+        val maxU: Float,
+        val minV: Float,
+        val maxV: Float,
+    )
+
+    private enum class ClipEdge {
+        MIN_U,
+        MAX_U,
+        MIN_V,
+        MAX_V,
+    }
+
+    private fun planeBounds(axis: ClipAxis, bounds: MineWorldBounds): PlaneBounds = when (axis) {
+        ClipAxis.X -> PlaneBounds(bounds.minY, bounds.maxY, bounds.minZ, bounds.maxZ)
+        ClipAxis.Y -> PlaneBounds(bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ)
+        ClipAxis.Z -> PlaneBounds(bounds.minX, bounds.maxX, bounds.minY, bounds.maxY)
+    }
+
+    private fun toPlanePoint(point: MinePoint3D, axis: ClipAxis): PlanePoint = when (axis) {
+        ClipAxis.X -> PlanePoint(point.y, point.z)
+        ClipAxis.Y -> PlanePoint(point.x, point.z)
+        ClipAxis.Z -> PlanePoint(point.x, point.y)
+    }
+
+    private fun fromPlanePoint(point: PlanePoint, axis: ClipAxis, planeValue: Float): MinePoint3D = when (axis) {
+        ClipAxis.X -> MinePoint3D(planeValue, point.u, point.v)
+        ClipAxis.Y -> MinePoint3D(point.u, planeValue, point.v)
+        ClipAxis.Z -> MinePoint3D(point.u, point.v, planeValue)
+    }
+
+    private fun clipPolygonToBounds(
+        polygon: List<PlanePoint>,
+        bounds: PlaneBounds,
+    ): List<PlanePoint> {
+        var result = polygon
+        ClipEdge.entries.forEach { edge ->
+            if (result.isEmpty()) return emptyList()
+            val input = result
+            result = ArrayList(input.size + 2)
+            var previous = input.last()
+            var previousInside = isInside(previous, edge, bounds)
+            input.forEach { current ->
+                val currentInside = isInside(current, edge, bounds)
+                when {
+                    currentInside && previousInside -> result += current
+                    currentInside && !previousInside -> {
+                        result += edgeIntersection(previous, current, edge, bounds)
+                        result += current
+                    }
+                    !currentInside && previousInside -> {
+                        result += edgeIntersection(previous, current, edge, bounds)
+                    }
+                }
+                previous = current
+                previousInside = currentInside
+            }
+        }
+        return result
+    }
+
+    private fun isInside(point: PlanePoint, edge: ClipEdge, bounds: PlaneBounds): Boolean = when (edge) {
+        ClipEdge.MIN_U -> point.u >= bounds.minU
+        ClipEdge.MAX_U -> point.u <= bounds.maxU
+        ClipEdge.MIN_V -> point.v >= bounds.minV
+        ClipEdge.MAX_V -> point.v <= bounds.maxV
+    }
+
+    private fun edgeIntersection(
+        start: PlanePoint,
+        end: PlanePoint,
+        edge: ClipEdge,
+        bounds: PlaneBounds,
+    ): PlanePoint {
+        return when (edge) {
+            ClipEdge.MIN_U,
+            ClipEdge.MAX_U,
+            -> {
+                val boundary = if (edge == ClipEdge.MIN_U) bounds.minU else bounds.maxU
+                val delta = end.u - start.u
+                val t = if (abs(delta) < 0.00001f) 0f else (boundary - start.u) / delta
+                PlanePoint(boundary, start.v + ((end.v - start.v) * t))
+            }
+            ClipEdge.MIN_V,
+            ClipEdge.MAX_V,
+            -> {
+                val boundary = if (edge == ClipEdge.MIN_V) bounds.minV else bounds.maxV
+                val delta = end.v - start.v
+                val t = if (abs(delta) < 0.00001f) 0f else (boundary - start.v) / delta
+                PlanePoint(start.u + ((end.u - start.u) * t), boundary)
+            }
+        }
     }
 
     private fun ring(
@@ -299,21 +377,6 @@ internal object OreMeshBuilder {
         ClipAxis.X -> point.copy(x = value)
         ClipAxis.Y -> point.copy(y = value)
         ClipAxis.Z -> point.copy(z = value)
-    }
-
-    private fun combine(
-        origin: MinePoint3D,
-        vararg terms: Pair<MinePoint3D, Float>,
-    ): MinePoint3D {
-        var x = origin.x
-        var y = origin.y
-        var z = origin.z
-        terms.forEach { (direction, scale) ->
-            x += direction.x * scale
-            y += direction.y * scale
-            z += direction.z * scale
-        }
-        return MinePoint3D(x, y, z)
     }
 
     private fun cross(a: MinePoint3D, b: MinePoint3D) = MinePoint3D(
