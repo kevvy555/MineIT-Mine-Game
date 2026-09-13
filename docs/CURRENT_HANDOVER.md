@@ -1,89 +1,106 @@
 # Current Handover — MineIT Mine Game
 
 Date: 2026-09-13
-Target release: 0.13.3
+Target release: 0.14.0
+Branch: `feature/deposit-geometry-stage2`
 
 ## Current state
 
-The native Android MineIT Mine Game POC now has a stable 3D geology/mining foundation:
+The native Android MineIT Mine Game POC now has a stable 3D subtractive mining foundation plus the Stage 2 realistic deposit model:
 
 - OpenGL ES renderer behind Jetpack Compose.
 - Expandable 3D geological world with rotate, pan and pinch zoom.
 - Persistent multi-axis X/Y/Z CT cutting; all three planes can be enabled together.
 - SEE ORE reveals ore only on CT cut faces, not as an x-ray overlay.
 - ROCK OFF and TUNNEL OFF allow inspection of discovered/depleted ore bodies.
-- Seeded Gold, Silver and Copper deposits currently use the original control-node/radius tube representation.
-- Excavation is true subtractive geometry: original deposits are immutable and remaining ore is derived from `original deposit - excavated tunnel volume`.
+- Seeded Gold, Silver and Copper deposits no longer use control-node/radius tubes.
+- Four immutable deposit archetypes are implemented: tabular vein/lode, lens/massive, layered/stratiform and disseminated/stockwork.
+- Every deposit exposes one signed domain material field plus conservative whole-body and local planning bounds.
+- Excavation remains true subtractive geometry: original deposits are immutable and remaining ore is derived from `original deposit - excavated tunnel volume`.
 - Ore and waste accounting partitions every newly removed volume exactly once; revisiting old workings cannot create material again.
 - Remaining ore is chunked and meshed asynchronously. Live digging uses a coarser ore mesh and stopped/idle rendering uses the 0.6m refined mesh.
-- Exportable CSV diagnostics are available from the app. The logger records 1-second samples plus tick/mesh spike events.
+- Mining ticks remain off the Android UI thread on the fixed 10 Hz cadence introduced in 0.13.3.
+- Exportable CSV diagnostics remain available from the app.
 
-## Deposit redesign plan
+## Stage 2 implementation
 
-`docs/DEPOSIT_GEOMETRY_REDESIGN.md` is the long-term plan.
+`docs/DEPOSIT_GEOMETRY_REDESIGN.md` is the durable design contract.
 
-1. True subtractive geometry — COMPLETE.
-2. Realistic deposit generators — NEXT after performance is acceptable:
-   - tabular/lode vein,
-   - lens/massive body,
-   - layered/stratiform body,
-   - disseminated/stockwork volume.
-3. Lightweight host-rock layers.
-4. Layered intrusions, laccolith-style host bodies, geological relationships and grade/composition.
+Stage 2 replaces `ore = tube` with a shape-agnostic domain contract:
 
-The key architectural decision is to keep deposit generation separate from excavation. Future deposit types should expose a signed/implicit material field and automatically inherit the same subtraction/mining behaviour.
+- `OreBody` owns an immutable `OreDepositGeometry`.
+- `margin(point)` is canonical original-ore truth: positive inside ore, zero at the surface and negative outside.
+- `bounds` provides conservative mining broad-phase culling.
+- `planningBounds()` provides conservative local regions for 12m render-chunk scheduling.
+- Mining, discovery, remaining-material queries, CT and rendering consume this common contract instead of branching on archetype.
 
-## 0.13.2 diagnostic findings
+The default six bodies are:
 
-A user test log (`mineit-diagnostics-20260913-141327.csv`) isolated two bottlenecks:
+- `gold-1` — tabular vein/lode, kept near the starter route for easy verification.
+- `gold-2` — tabular vein/lode.
+- `silver-1` — tabular vein/lode.
+- `silver-2` — lens/massive body.
+- `copper-1` — disseminated/stockwork volume.
+- `copper-2` — layered/stratiform body.
 
-- Rendering stayed near 89–90 fps / ~11.1ms while the user perceived digging hitches.
-- The synchronous mining tick reached ~32ms, with ~30ms in material classification.
-- Typical ticks evaluated ~177 candidate samples, up to 6 ore bodies per sample, and many historical tunnel segments.
-- Exact ore mesh generation was no longer the immediate UI blocker, but stopping after an ore cut could create a large fine-mesh backlog (around 75 ore chunks in the captured run).
-- Fine 0.6m ore chunks could take roughly 0.8–0.95s each to polygonise on the ore worker.
+The geometries are deterministic from `MineWorldContent.ORE_SEED`. Strike/dip basis vectors, conservative bounds and local planning regions are precomputed once per immutable body, so per-sample mining queries remain constant-cost and do not traverse deposit topology.
 
-Conclusion: keep the subtractive geometry architecture; optimise scheduling and spatial/query breadth rather than redesigning the ore model again.
+For irregular lens/stockwork bodies, conservative bound padding is scaled so low-frequency boundary variation cannot extend beyond the broad-phase AABB and be falsely culled.
 
-## 0.13.3 performance pass
+## Stage 2 regression coverage
 
-This release targets the findings above without changing gameplay truth:
+The tests now prove:
 
-- Mining ticks are moved off the Android main/UI thread onto `Dispatchers.Default`.
-- Tick scheduling is anchored to a fixed 10 Hz cadence rather than `100ms delay + calculation time`.
-- A completed background tick is only published if its input state is still current, so steering/speed/view-related user input cannot be overwritten by a stale result.
-- Ore-field classification first culls distant ore bodies using conservative deposit bounds.
-- `oreMargin` no longer allocates `zipWithNext()` lists for every sample.
-- Historical tunnel candidates get precomputed expanded AABBs; cheap bounds checks reject most segments before the expensive finite-cylinder distance test.
-- Diagnostics now distinguish tunnel bounds checks from exact cylinder checks and report the number of nearby ore bodies.
-- Ore render chunk planning follows each local ore segment envelope instead of the whole deposit's enclosing AABB. This reduces empty chunks queued for discovery/live/final ore meshing, especially for long or curved deposits.
+- the same seed produces structurally equal geology;
+- the default seed contains two bodies of each commodity and all four archetypes;
+- archetype fields classify representative inside/outside points correctly;
+- generated bodies stay below the 5m minimum ore depth;
+- the starter route still discovers/mines `gold-1`;
+- every newly excavated sample remains exactly one of ore or waste;
+- repeated excavation produces no material twice;
+- all four archetypes inherit the same cutter subtraction and retain adjacent ore;
+- distant deposits are broad-phase culled before per-sample field evaluation;
+- long/diagonal deposits use local planning bounds rather than queuing empty corners of one enclosing AABB;
+- CT and remaining-ore rendering still expose real cutter-sized voids.
+
+A completed Stage 2 CI run has already passed unit tests, APK assembly, signer verification and artifact upload. The final 0.14.0 branch head must also pass the same full CI before promotion to `main`.
+
+## 0.13.3 performance foundation retained
+
+The Stage 2 implementation deliberately preserves the previous performance work:
+
+- mining calculation runs on `Dispatchers.Default`, not the Android UI thread;
+- tick scheduling is anchored to a fixed 10 Hz cadence;
+- stale background ticks cannot overwrite newer steering/speed input;
+- mining first culls ore bodies by conservative bounds;
+- historical tunnel candidates use expanded AABBs before exact cylinder checks;
+- diagnostics distinguish tunnel bounds checks from exact checks and expose nearby ore-body counts;
+- ore rendering stays partitioned into aligned 12m chunks with asynchronous ore work;
+- Stage 2 local planning bounds replace tube-segment planning without reverting to whole-deposit enclosing boxes.
 
 ## Next device test
 
-Use the current 0.13.3 APK and repeat the same diagnostic scenario:
+After installing 0.14.0, validate both geology appearance and the retained performance behaviour:
 
-1. Start a fresh mine and approach a reasonably large ore body.
-2. Dig through it at 0.3x speed with diagnostics visible.
-3. Continue for several seconds after entering and leaving the ore.
-4. Stop and wait until ore/rock workers settle.
-5. Export the CSV diagnostics and upload it to the next chat.
-6. If possible, note whether controls/machine movement still visibly hitch even when FPS remains high.
-
-Compare against 0.13.2 specifically for:
-
-- `tick_ms` and `material_ms` peaks,
-- `nearby_ore_bodies` and `ore_field_evals`,
-- `tunnel_bounds_checks` versus `exact_tunnel_checks`,
-- ore queue size after discovery and after Stop,
-- live ore mesh latency and fine ore mesh backlog.
+1. Start a fresh mine with the default seed.
+2. Use SEE ORE with X/Y/Z CT planes to inspect the generated bodies before mining. Confirm the vein, lens, layered and disseminated bodies are visibly distinct rather than tube-like.
+3. Follow the normal starter route and confirm `gold-1` is still encountered naturally.
+4. Dig through the Gold vein at about 0.3x speed and confirm the cutter leaves an actual tunnel-shaped hole through the sheet rather than thinning the entire body.
+5. Use ROCK OFF after discovery to inspect the remaining body from several angles.
+6. Stop and wait for coarse/fine ore workers to settle.
+7. Export a diagnostic CSV.
+8. Compare `tick_ms`, `material_ms`, `nearby_ore_bodies`, `ore_field_evals`, ore queue size and ore mesh latency against the 0.13.3 performance test. Stage 2 should not materially regress the 0.13.3 behaviour.
 
 ## What to do next
 
-If 0.13.3 materially reduces tick spikes and ore queue size, proceed to Stage 2 of the deposit redesign rather than further micro-optimising the current tube deposits.
+Once 0.14.0 is visually/device validated, Stage 3 of `docs/DEPOSIT_GEOMETRY_REDESIGN.md` is next:
 
-If material ticks are still regularly above ~15–20ms, the next likely optimisation is a persistent domain-side spatial index/query structure for excavation history rather than scanning the broad candidate list every tick.
+- add lightweight deterministic host-rock regions/layers;
+- give host units identity, colour and metadata;
+- allow deposit generation to reference layers/contacts without coupling host rock and ore into one model;
+- avoid a large hardness/economy simulation until gameplay requires it.
 
-If the ore queue is still large, add a low-priority refinement backlog so coarse live chunks remain usable and fine 0.6m refinement is progressively scheduled instead of creating a large immediate stop-time queue.
+If device diagnostics show material ticks again regularly above roughly 15–20ms, investigate domain-side spatial indexing of excavation history rather than weakening the new deposit fields. If the ore refinement queue is again large, prioritise progressive/low-priority fine refinement rather than changing canonical geology.
 
 ## Repository rules
 
@@ -91,6 +108,6 @@ Always read root `AGENTS.md` in full before changing code. In particular:
 
 - `domain/` owns canonical gameplay state/rules.
 - `ui/` and `ui/render/` own presentation, scheduling and disposable mesh/cache state.
-- Do not introduce duplicate/new/old/temp production implementations.
+- Do not introduce duplicate/new/old/temp/compatibility production implementations.
 - Gameplay/domain changes require regression tests.
-- Full Android CI must pass before considering a significant change complete.
+- Full Android CI must pass before considering a significant change complete or updating `main`.
