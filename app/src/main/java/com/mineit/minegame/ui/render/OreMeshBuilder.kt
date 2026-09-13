@@ -18,8 +18,8 @@ internal object OreMeshBuilder {
     private const val WORLD_EDGE_EPSILON_METRES = 0.001f
 
     /**
-     * Compatibility/helper path used by tests. Runtime rendering keeps these meshes chunked and
-     * uploads them independently so a local cutter pass never rebuilds an entire deposit.
+     * Test/helper path that combines runtime-style chunks into one mesh. Runtime rendering keeps
+     * chunks independent so a local cutter pass never rebuilds an entire deposit.
      */
     fun buildDiscovered(state: MineWorldState): MineMesh = combine(
         state.discoveredOreBodies.flatMap { body ->
@@ -39,7 +39,7 @@ internal object OreMeshBuilder {
         gridStepMetres: Float = BODY_GRID_STEP_METRES,
     ): MineMesh {
         if (key.bodyId != body.id) return emptyMesh()
-        val originalBounds = OreChunkPlanner.bodyBounds(body) ?: return emptyMesh()
+        val originalBounds = OreChunkPlanner.bodyBounds(body)
         val coreBounds = OreChunkPlanner.intersect(key.bounds(), state.bounds) ?: return emptyMesh()
         if (OreChunkPlanner.intersect(coreBounds, originalBounds) == null) return emptyMesh()
 
@@ -84,7 +84,7 @@ internal object OreMeshBuilder {
         val normal = capNormal(axis, flipped)
         val renderPlane = clip + axisCoordinate(normal, axis) * ORE_SLICE_OFFSET_METRES
         return combine(bodies.mapNotNull { body ->
-            val originalBounds = OreChunkPlanner.bodyBounds(body) ?: return@mapNotNull null
+            val originalBounds = OreChunkPlanner.bodyBounds(body)
             if (clip < axisMinimum(originalBounds, axis) || clip > axisMaximum(originalBounds, axis)) {
                 return@mapNotNull null
             }
