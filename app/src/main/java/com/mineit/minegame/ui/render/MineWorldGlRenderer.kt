@@ -191,6 +191,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             oreOverlayDirty = true
             oreSliceDirty = true
         }
+        if (state.oreBodies !== previous.oreBodies) {
+            // The domain owns ore depletion. Presentation only invalidates cached geometry when the
+            // canonical remaining body changes so ROCK OFF and CT immediately show the same state.
+            tunnelOverviewDirty = true
+            oreOverlayDirty = true
+            oreSliceDirty = true
+        }
     }
 
     fun setSlices(configuration: SliceConfiguration) {
