@@ -58,6 +58,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var rockVisible = true
 
     @Volatile
+    private var seeOre = false
+
+    @Volatile
     private var machineDirty = true
 
     @Volatile
@@ -73,6 +76,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var sliceDirty = true
 
     @Volatile
+    private var oreOverlayDirty = true
+
+    @Volatile
     private var performanceListener: ((RenderPerformanceStats) -> Unit)? = null
 
     @Volatile
@@ -83,6 +89,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     @Volatile
     private var zoomScale = 1f
+
+    @Volatile
+    private var panRightMetres = 0f
+
+    @Volatile
+    private var panUpMetres = 0f
 
     @Volatile
     private var followDigger = false
@@ -123,6 +135,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var tunnelOverviewMesh: GlMesh? = null
     private var grassMesh: GlMesh? = null
     private var worldShellMesh: GlMesh? = null
+    private var oreOverlayMesh: GlMesh? = null
 
     private val modelMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -172,10 +185,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             worldShellDirty = true
             grassDirty = true
             sliceDirty = true
+            oreOverlayDirty = true
         }
-        if (state.oreBodyDiscovered != previous.oreBodyDiscovered) {
+        if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
             sliceDirty = true
             tunnelOverviewDirty = true
+            oreOverlayDirty = true
         }
     }
 
@@ -196,6 +211,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     }
 
     fun setFollowDigger(enabled: Boolean) {
+        if (enabled && !followDigger) {
+            panRightMetres = 0f
+            panUpMetres = 0f
+        }
         followDigger = enabled
     }
 
@@ -217,6 +236,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         }
     }
 
+    fun setSeeOre(enabled: Boolean) {
+        if (enabled == seeOre) return
+        seeOre = enabled
+        oreOverlayDirty = true
+    }
+
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
         performanceListener = listener
     }
@@ -225,6 +250,16 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         if (cameraMode != CameraMode.ORBIT) return
         yawDegrees = (yawDegrees + (deltaX * 0.35f)) % 360f
         pitchDegrees = (pitchDegrees + (deltaY * 0.30f)).coerceIn(-82f, 82f)
+    }
+
+    fun pan(deltaX: Float, deltaY: Float) {
+        if (cameraMode != CameraMode.ORBIT) return
+        val bounds = worldState.bounds
+        val largestSpan = max(bounds.width, max(bounds.height, bounds.depth))
+        val framingSpan = if (followDigger) FOLLOW_DIGGER_FRAMING_SPAN_METRES else largestSpan
+        val metresPerPixel = (framingSpan * zoomScale * PAN_SCREEN_SCALE) / max(1, surfaceHeight).toFloat()
+        panRightMetres -= deltaX * metresPerPixel
+        panUpMetres += deltaY * metresPerPixel
     }
 
     fun zoom(scaleFactor: Float) {
@@ -236,6 +271,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         yawDegrees = 38f
         pitchDegrees = 24f
         zoomScale = 1f
+        panRightMetres = 0f
+        panUpMetres = 0f
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -261,12 +298,14 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         tunnelOverviewMesh = null
         grassMesh = null
         worldShellMesh = null
+        oreOverlayMesh = null
         pipelineGeneration += 1L
         machineDirty = true
         tunnelOverviewDirty = true
         grassDirty = true
         worldShellDirty = true
         sliceDirty = true
+        oreOverlayDirty = true
         statsWindowStartNanos = System.nanoTime()
         framesInStatsWindow = 0
     }
@@ -308,6 +347,23 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             applyClipUniforms(state, enabled = false)
             drawMesh(grassMesh)
             drawMesh(tunnelOverviewMesh)
+        }
+
+        if (oreOverlayMesh != null) {
+            if (seeOre) {
+                GLES20.glEnable(GLES20.GL_BLEND)
+                GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+                GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+                applyClipUniforms(state, enabled = false)
+                GLES20.glUniform1f(alphaLocation, SEE_ORE_ALPHA)
+                drawMesh(oreOverlayMesh)
+                GLES20.glUniform1f(alphaLocation, 1f)
+                GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+                GLES20.glDisable(GLES20.GL_BLEND)
+            } else {
+                applyClipUniforms(state, enabled = showCutaway)
+                drawMesh(oreOverlayMesh)
+            }
         }
 
         if (cameraMode == CameraMode.ORBIT) {
@@ -361,6 +417,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             worldShellDirty = true
             grassDirty = true
             sliceDirty = true
+            oreOverlayDirty = true
         }
 
         if (state.tunnel.points.size > previous.tunnel.points.size) {
@@ -411,8 +468,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             lastActiveRemeshPoint = null
         }
 
-        if (state.oreBodyDiscovered != previous.oreBodyDiscovered) {
+        if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
             sliceDirty = true
+            oreOverlayDirty = true
         }
 
         processedState = state
@@ -461,6 +519,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         grassDirty = true
         worldShellDirty = true
         sliceDirty = true
+        oreOverlayDirty = true
     }
 
     private fun indexSegment(state: MineWorldState, segment: TunnelSegment) {
@@ -594,6 +653,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             tunnelOverviewDirty = false
         }
 
+        if (oreOverlayDirty) {
+            val uploadStart = System.nanoTime()
+            val uploaded = uploadMesh(OreMeshBuilder.build(state, showAll = seeOre))
+            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
+            deleteMesh(oreOverlayMesh)
+            oreOverlayMesh = uploaded
+            oreOverlayDirty = false
+        }
+
         if (sliceDirty && rockVisible && clipEnabled && cameraMode == CameraMode.ORBIT) {
             val clipValue = MineMeshBuilder.clipValue(state, clipAxis, clipFraction)
             val nearbySegments = linkedSetOf<TunnelSegment>()
@@ -691,19 +759,33 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private fun updateOrbitMatrices(state: MineWorldState) {
         val bounds = state.bounds
         val target = if (followDigger) state.tunnel.end else bounds.centre
-        val targetX = target.x
-        val targetY = -target.z
-        val targetZ = target.y
         val largestSpan = max(bounds.width, max(bounds.height, bounds.depth))
         val framingSpan = if (followDigger) FOLLOW_DIGGER_FRAMING_SPAN_METRES else largestSpan
         val distance = framingSpan * 2.25f * zoomScale
         val yaw = Math.toRadians(yawDegrees.toDouble())
         val pitch = Math.toRadians(pitchDegrees.toDouble())
-        val horizontal = cos(pitch).toFloat() * distance
+        val cosYaw = cos(yaw).toFloat()
+        val sinYaw = sin(yaw).toFloat()
+        val cosPitch = cos(pitch).toFloat()
+        val sinPitch = sin(pitch).toFloat()
+        val horizontal = cosPitch * distance
 
-        val eyeX = targetX + (cos(yaw).toFloat() * horizontal)
-        val eyeY = targetY + (sin(pitch).toFloat() * distance)
-        val eyeZ = targetZ + (sin(yaw).toFloat() * horizontal)
+        val baseTargetX = target.x
+        val baseTargetY = -target.z
+        val baseTargetZ = target.y
+        val rightX = sinYaw
+        val rightY = 0f
+        val rightZ = -cosYaw
+        val upX = -cosYaw * sinPitch
+        val upY = cosPitch
+        val upZ = -sinYaw * sinPitch
+        val targetX = baseTargetX + (rightX * panRightMetres) + (upX * panUpMetres)
+        val targetY = baseTargetY + (rightY * panRightMetres) + (upY * panUpMetres)
+        val targetZ = baseTargetZ + (rightZ * panRightMetres) + (upZ * panUpMetres)
+
+        val eyeX = targetX + (cosYaw * horizontal)
+        val eyeY = targetY + (sinPitch * distance)
+        val eyeZ = targetZ + (sinYaw * horizontal)
 
         Matrix.setLookAtM(
             viewMatrix,
@@ -834,8 +916,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         } else {
             (tunnelOverviewMesh?.vertexCount ?: 0) + (grassMesh?.vertexCount ?: 0)
         }
+        val oreVertices = oreOverlayMesh?.vertexCount ?: 0
         val machineCopies = if (cameraMode == CameraMode.ORBIT) 2 else 0
-        val totalVertices = worldVertices + ((machineMesh?.vertexCount ?: 0) * machineCopies)
+        val totalVertices = worldVertices + oreVertices + ((machineMesh?.vertexCount ?: 0) * machineCopies)
         performanceListener?.invoke(
             RenderPerformanceStats(
                 framesPerSecond = fps,
@@ -892,6 +975,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private companion object {
         const val FLOATS_PER_VERTEX = 9
         const val XRAY_MACHINE_ALPHA = 0.38f
+        const val SEE_ORE_ALPHA = 0.82f
+        const val PAN_SCREEN_SCALE = 1.35f
         const val STATS_WINDOW_NANOS = 500_000_000L
         const val ACTIVE_REMESH_DISTANCE_METRES = 1.2f
         const val ACTIVE_GRID_STEP_METRES = 1.6f
