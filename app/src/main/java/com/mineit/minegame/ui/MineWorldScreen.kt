@@ -222,7 +222,7 @@ private fun MineWorldHeader(state: MineWorldState) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "TRUE SUBTRACTIVE DEPOSIT GEOMETRY",
+                    text = "CHUNKED SUBTRACTIVE ORE MESHING",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -277,11 +277,13 @@ private fun PerformanceOverlay(
     Text(
         text = buildString {
             append("${stats.framesPerSecond} fps  ${format1(stats.frameTimeMs)}ms\n")
-            append("mesh ${format1(stats.lastChunkBuildMs)}ms")
+            append("rock ${format1(stats.lastChunkBuildMs)}ms")
             if (stats.chunksRebuilt > 0) append(" ×${stats.chunksRebuilt}")
-            append("  cap ${format1(stats.lastCapBuildMs)}ms\n")
-            append("${stats.triangleCount / 1000}k tris  ${stats.cachedChunks} chunks  upload ${format1(stats.lastUploadMs)}ms\n")
-            append("queue ${stats.queuedChunks}  mesh ${if (stats.meshWorkerBusy) "BUSY" else "IDLE"}  cap ${if (stats.capWorkerBusy) "BUSY" else "IDLE"}")
+            append("  ore ${format1(stats.lastOreChunkBuildMs)}ms")
+            if (stats.oreChunksRebuilt > 0) append(" ×${stats.oreChunksRebuilt}")
+            append("\ncap ${format1(stats.lastCapBuildMs)}ms  upload ${format1(stats.lastUploadMs)}ms\n")
+            append("${stats.triangleCount / 1000}k tris (${stats.oreTriangleCount / 1000}k ore)  R${stats.cachedChunks}/O${stats.cachedOreChunks} chunks\n")
+            append("q R${stats.queuedChunks}/O${stats.queuedOreChunks}  workers R${if (stats.meshWorkerBusy) "BUSY" else "IDLE"}/O${if (stats.oreWorkerBusy) "BUSY" else "IDLE"}")
         },
         color = Color(0xFFE0E6EC),
         style = MaterialTheme.typography.labelSmall,
@@ -748,15 +750,23 @@ private fun OtherPanelContent(
     )
 
     Text(
-        text = "Renderer: ${performanceStats.framesPerSecond} fps • ${performanceStats.triangleCount / 1000}k tris • " +
-            "${performanceStats.cachedChunks} cached chunks • ${performanceStats.queuedChunks} queued • " +
-            "mesh ${if (performanceStats.meshWorkerBusy) "busy" else "idle"} • cap ${if (performanceStats.capWorkerBusy) "busy" else "idle"}",
+        text = "Renderer: ${performanceStats.framesPerSecond} fps • ${performanceStats.triangleCount / 1000}k tris " +
+            "(${performanceStats.oreTriangleCount / 1000}k ore) • rock ${performanceStats.cachedChunks}ch/${performanceStats.queuedChunks}q • " +
+            "ore ${performanceStats.cachedOreChunks}ch/${performanceStats.queuedOreChunks}q",
         color = Color(0xFFB5BEC8),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "Excavation is partitioned once into mined ore or waste rock; remaining ore geometry shrinks where the cutter passes, and revisiting old workings produces no new material.",
+        text = "Build ms: rock ${format1(performanceStats.lastChunkBuildMs)} last / ${format1(performanceStats.peakChunkBuildMs)} peak • " +
+            "ore ${format1(performanceStats.lastOreChunkBuildMs)} last / ${format1(performanceStats.peakOreChunkBuildMs)} peak • " +
+            "cap ${format1(performanceStats.lastCapBuildMs)}",
+        color = Color(0xFFB5BEC8),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+    Text(
+        text = "Excavation is partitioned once into mined ore or waste rock; remaining ore is original geology minus the cutter volume, and only locally affected ore chunks are remeshed after a pass.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),

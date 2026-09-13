@@ -33,6 +33,8 @@ Goal: make excavation physically subtract from ore without mutating the original
 
 Exit criteria: the current screenshot case shows a literal tunnel-sized bite through the deposit rather than a thinner vein.
 
+Stage 1 refinement (0.13.1): remaining-ore presentation is partitioned into aligned 12m render chunks, rebuilt asynchronously on a dedicated ore worker. Cutter passes invalidate only intersected ore chunks; CT continues to use the same canonical remaining-material field. Diagnostics now report rock and ore build costs separately.
+
 ## Stage 2 — Realistic deposit archetypes
 
 Goal: replace `ore = tube` with a small set of useful geological forms while retaining seeded reproducibility.
