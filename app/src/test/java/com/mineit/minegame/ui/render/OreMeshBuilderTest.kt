@@ -9,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 class OreMeshBuilderTest {
     @Test
@@ -120,4 +121,40 @@ class OreMeshBuilderTest {
             assertTrue(z >= bounds.minZ - 0.001f && z <= bounds.maxZ + 0.001f)
         }
     }
+    @Test
+    fun discoveredOreMeshContainsARealCutterSizedVoid() {
+        val body = OreBody(
+            id = "cut-copper",
+            type = OreType.COPPER,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
+            ),
+        )
+        val tunnel = com.mineit.minegame.domain.TunnelGeometry(
+            points = listOf(MinePoint3D(0f, 0f, 1f), MinePoint3D(0f, 0f, 15f)),
+            radiusMetres = 3.2f,
+        )
+        val state = MineWorldState(
+            tunnel = tunnel,
+            oreBodies = listOf(body),
+            discoveredOreBodyIds = setOf(body.id),
+        )
+        val mesh = OreMeshBuilder.buildDiscovered(state)
+        assertTrue(mesh.vertexCount > 0)
+        var hasInnerCutterWall = false
+        for (vertex in 0 until mesh.vertexCount) {
+            val base = vertex * 9
+            val x = mesh.vertices[base]
+            val y = mesh.vertices[base + 1]
+            val z = mesh.vertices[base + 2]
+            if (z in 4f..12f) {
+                val radius = sqrt((x * x) + (y * y))
+                assertTrue("ore surface must not bridge through the excavated channel", radius >= 2.35f)
+                if (radius in 2.6f..3.8f) hasInnerCutterWall = true
+            }
+        }
+        assertTrue("remaining ore should expose an inner cutter wall", hasInnerCutterWall)
+    }
+
 }

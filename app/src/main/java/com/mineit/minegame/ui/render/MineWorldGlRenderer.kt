@@ -194,9 +194,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             oreOverlayDirty = true
             oreSliceDirty = true
         }
-        if (state.oreBodies !== previous.oreBodies) {
-            // The domain owns ore depletion. Presentation only invalidates cached geometry when the
-            // canonical remaining body changes so ROCK OFF and CT immediately show the same state.
+        if (state.minedOreVolumeCubicMetresByType != previous.minedOreVolumeCubicMetresByType) {
+            // Original deposits stay immutable; mining changes only the subtraction field.
             tunnelOverviewDirty = true
             oreOverlayDirty = true
             oreSliceDirty = true
@@ -681,7 +680,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             tunnelOverviewDirty = false
         }
 
-        if (oreOverlayDirty) {
+        if (oreOverlayDirty && !state.isDigging) {
             val uploadStart = System.nanoTime()
             val uploaded = uploadMesh(OreMeshBuilder.buildDiscovered(state))
             lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
@@ -690,7 +689,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             oreOverlayDirty = false
         }
 
-        if (oreSliceDirty) {
+        if (oreSliceDirty && !state.isDigging) {
             oreSliceMeshes.values.forEach(::deleteMesh)
             oreSliceMeshes.clear()
             if (rockVisible && slices.enabledAxes.isNotEmpty() && cameraMode == CameraMode.ORBIT) {

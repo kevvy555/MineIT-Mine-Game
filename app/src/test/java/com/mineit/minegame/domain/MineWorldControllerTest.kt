@@ -103,57 +103,47 @@ class MineWorldControllerTest {
     }
 
     @Test
-    fun narrowVeinShrinksWhereTheCutterPasses() {
-        val ore = OreBody(
-            id = "test-gold",
-            type = OreType.GOLD,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 1.6f),
-                OreBodyNode(MinePoint3D(0f, 0f, 14f), 1.6f),
-            ),
-        )
-        var state = MineWorldState(
-            oreBodies = listOf(ore),
-            verticalAngleDegrees = 90f,
-        )
-        state = MineWorldController.startDigging(state)
-        repeat(12) {
-            state = MineWorldController.tick(state, 0.25f)
-        }
-
-        val remaining = state.oreBodies.single().nodes
-        assertTrue(state.minedOreVolumeCubicMetres(OreType.GOLD) > 0f)
-        assertTrue(remaining.size > ore.nodes.size)
-        assertTrue(
-            "the cutter should consume narrow ore stations rather than leaving the original vein",
-            remaining.any { node -> node.centre.z in 2f..8f && node.radiusMetres == 0f },
-        )
-    }
-
-    @Test
-    fun broadVeinIsReducedRatherThanEntirelyDeletedByOnePass() {
+    fun excavationLeavesOriginalDepositImmutableAndCreatesTrueRemainingMaterialHole() {
         val ore = OreBody(
             id = "test-copper",
             type = OreType.COPPER,
             nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 8f),
-                OreBodyNode(MinePoint3D(0f, 0f, 14f), 8f),
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
             ),
         )
-        var state = MineWorldState(
-            oreBodies = listOf(ore),
-            verticalAngleDegrees = 90f,
-        )
+        var state = MineWorldState(oreBodies = listOf(ore), verticalAngleDegrees = 90f)
         state = MineWorldController.startDigging(state)
-        repeat(12) {
-            state = MineWorldController.tick(state, 0.25f)
-        }
+        repeat(12) { state = MineWorldController.tick(state, 0.25f) }
 
-        val affected = state.oreBodies.single().nodes
-            .filter { it.centre.z in 2f..8f }
+        val cutCentre = MinePoint3D(0f, 0f, 6f)
+        val untouchedSide = MinePoint3D(5f, 0f, 6f)
         assertTrue(state.minedOreVolumeCubicMetres(OreType.COPPER) > 0f)
-        assertTrue(affected.any { it.radiusMetres > 0.1f && it.radiusMetres < 8f })
-        assertTrue(affected.any { it.radiusMetres > 0f })
+        assertEquals("original deposit definition must not be mutated", ore, state.oreBodies.single())
+        assertTrue(MineWorldGeometry.oreMargin(cutCentre, ore.nodes) > 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(cutCentre, ore, state.tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(untouchedSide, ore, state.tunnel) > 0f)
+    }
+
+    @Test
+    fun remainingOreFieldUsesTheActualTunnelRadiusInsteadOfEquivalentRadiusShrink() {
+        val ore = OreBody(
+            id = "test-gold",
+            type = OreType.GOLD,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 7f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 7f),
+            ),
+        )
+        val tunnel = TunnelGeometry(
+            points = listOf(MinePoint3D(0f, 0f, 1f), MinePoint3D(0f, 0f, 15f)),
+            radiusMetres = 3.2f,
+        )
+
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(0f, 0f, 8f), ore, tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(3.1f, 0f, 8f), ore, tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(3.4f, 0f, 8f), ore, tunnel) > 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(6.5f, 0f, 8f), ore, tunnel) > 0f)
     }
 
     @Test

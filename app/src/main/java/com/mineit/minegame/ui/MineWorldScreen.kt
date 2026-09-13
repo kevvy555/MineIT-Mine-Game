@@ -222,7 +222,7 @@ private fun MineWorldHeader(state: MineWorldState) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "ORE EXTRACTION + MATERIAL ACCOUNTING",
+                    text = "TRUE SUBTRACTIVE DEPOSIT GEOMETRY",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )

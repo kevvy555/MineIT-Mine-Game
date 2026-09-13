@@ -1,6 +1,6 @@
 # Deposit Geometry Redesign
 
-Status: Stage 1 in progress
+Status: Stage 1 implemented; validation pending
 Branch: `feature/deposit-geometry-redesign`
 
 ## Why this exists

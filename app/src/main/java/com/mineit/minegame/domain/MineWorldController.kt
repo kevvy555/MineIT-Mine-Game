@@ -149,13 +149,6 @@ object MineWorldController {
             minedOreByType[type] = (minedOreByType[type] ?: 0f) + volume
         }
 
-        val depletedOreBodies = MineWorldGeometry.depleteOreBodies(
-            oreBodies = state.oreBodies,
-            start = start,
-            end = target,
-            tunnelRadiusMetres = state.tunnel.radiusMetres,
-            minedBodyIds = minedBodyIds,
-        )
 
         val tunnel = state.tunnel.copy(points = state.tunnel.points + target)
         val extent = expandExtent(state.extent, target)
@@ -163,7 +156,6 @@ object MineWorldController {
         return state.copy(
             tunnel = tunnel,
             extent = extent,
-            oreBodies = depletedOreBodies,
             headingDegrees = heading,
             wasteRockVolumeCubicMetres =
                 state.wasteRockVolumeCubicMetres + material.wasteRockVolumeCubicMetres,
