@@ -22,6 +22,7 @@ internal data class RenderPerformanceStats(
     val frameTimeMs: Float = 0f,
     val lastChunkBuildMs: Float = 0f,
     val lastOreChunkBuildMs: Float = 0f,
+    val lastOreGridStepMetres: Float = 0f,
     val peakChunkBuildMs: Float = 0f,
     val peakOreChunkBuildMs: Float = 0f,
     val lastCapBuildMs: Float = 0f,
@@ -131,7 +132,8 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private val chunksTouchedDuringDigging = linkedSetOf<ChunkKey>()
     private val activeDirtyChunks = linkedSetOf<ChunkKey>()
     private val oreChunkMeshes = linkedMapOf<OreChunkKey, GlMesh?>()
-    private val pendingOreChunkBuilds = linkedSetOf<OreChunkKey>()
+    private val pendingOreChunkBuilds = linkedMapOf<OreChunkKey, Float>()
+    private val activeOreDirtyChunks = linkedSetOf<OreChunkKey>()
     private val oreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
     private val appliedOreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
     private val oreChunksTouchedDuringDigging = linkedSetOf<OreChunkKey>()
@@ -170,6 +172,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var framesInStatsWindow = 0
     private var lastChunkBuildMs = 0f
     private var lastOreChunkBuildMs = 0f
+    private var lastOreGridStepMetres = 0f
     private var peakChunkBuildMs = 0f
     private var peakOreChunkBuildMs = 0f
     private var lastCapBuildMs = 0f
@@ -319,6 +322,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         activeDirtyChunks.clear()
         oreChunkMeshes.clear()
         pendingOreChunkBuilds.clear()
+        activeOreDirtyChunks.clear()
         oreChunkRevisions.clear()
         appliedOreChunkRevisions.clear()
         oreChunksTouchedDuringDigging.clear()
@@ -450,6 +454,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             chunksTouchedDuringDigging.clear()
             activeDirtyChunks.clear()
             oreChunksTouchedDuringDigging.clear()
+            activeOreDirtyChunks.clear()
             activeSliceDirty = false
             lastActiveRemeshPoint = state.tunnel.end
         }
@@ -489,13 +494,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                     chunksTouchedDuringDigging += affected
                 }
                 state.discoveredOreBodies.forEach { body ->
-                    oreChunksTouchedDuringDigging += OreChunkPlanner.affectedChunks(
+                    val affectedOre = OreChunkPlanner.affectedChunks(
                         segment = segment,
                         tunnelRadiusMetres = state.tunnel.radiusMetres,
                         body = body,
                         worldBounds = state.bounds,
-                        extraPaddingMetres = OreMeshBuilder.BODY_GRID_STEP_METRES,
+                        extraPaddingMetres = LIVE_ORE_GRID_STEP_METRES,
                     )
+                    oreChunksTouchedDuringDigging += affectedOre
+                    activeOreDirtyChunks += affectedOre
                 }
 
                 if (segmentTouchesAnyActiveSlice(state, segment)) {
@@ -515,8 +522,11 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             }
             chunksTouchedDuringDigging.clear()
             activeDirtyChunks.clear()
-            oreChunksTouchedDuringDigging.forEach(::markOreChunkForBuild)
+            oreChunksTouchedDuringDigging.forEach { key ->
+                markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES, replaceExisting = true)
+            }
             oreChunksTouchedDuringDigging.clear()
+            activeOreDirtyChunks.clear()
             activeSliceDirty = false
             lastActiveRemeshPoint = null
         }
@@ -528,7 +538,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             state.oreBodies
                 .filter { it.id in newlyDiscovered }
                 .forEach { body ->
-                    OreChunkPlanner.chunksForBody(body, state.bounds).forEach(::markOreChunkForBuild)
+                    OreChunkPlanner.chunksForBody(body, state.bounds).forEach { key ->
+                markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES)
+            }
                 }
         }
 
@@ -557,6 +569,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             markChunkForBuild(key, ACTIVE_GRID_STEP_METRES, replaceExisting = true)
         }
         activeDirtyChunks.clear()
+        activeOreDirtyChunks.forEach { key ->
+            markOreChunkForBuild(key, LIVE_ORE_GRID_STEP_METRES, replaceExisting = true)
+        }
+        activeOreDirtyChunks.clear()
         if (activeSliceDirty) {
             sliceDirty = true
             activeSliceDirty = false
@@ -577,6 +593,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         oreChunkMeshes.values.forEach(::deleteMesh)
         oreChunkMeshes.clear()
         pendingOreChunkBuilds.clear()
+        activeOreDirtyChunks.clear()
         oreChunkRevisions.clear()
         appliedOreChunkRevisions.clear()
         oreChunksTouchedDuringDigging.clear()
@@ -659,13 +676,24 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private fun queueOreRebuildsIfNeeded(state: MineWorldState) {
         if (!oreCacheDirty || state.isDigging) return
         state.discoveredOreBodies.forEach { body ->
-            OreChunkPlanner.chunksForBody(body, state.bounds).forEach(::markOreChunkForBuild)
+            OreChunkPlanner.chunksForBody(body, state.bounds).forEach { key ->
+                markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES)
+            }
         }
         oreCacheDirty = false
     }
 
-    private fun markOreChunkForBuild(key: OreChunkKey) {
-        pendingOreChunkBuilds += key
+    private fun markOreChunkForBuild(
+        key: OreChunkKey,
+        gridStepMetres: Float,
+        replaceExisting: Boolean = false,
+    ) {
+        val existing = pendingOreChunkBuilds[key]
+        pendingOreChunkBuilds[key] = when {
+            replaceExisting -> gridStepMetres
+            existing == null -> gridStepMetres
+            else -> minOf(existing, gridStepMetres)
+        }
         oreChunkRevisions[key] = (oreChunkRevisions[key] ?: 0L) + 1L
     }
 
@@ -685,16 +713,19 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             deleteMesh(previous)
             appliedOreChunkRevisions[result.key] = result.revision
             lastOreChunkBuildMs = result.buildMs
+            lastOreGridStepMetres = result.gridStepMetres
             peakOreChunkBuildMs = max(peakOreChunkBuildMs, result.buildMs)
             oreChunksRebuiltSinceStats += 1
         }
     }
 
     private fun scheduleNextOreChunkBuild(state: MineWorldState) {
-        if (state.isDigging || pendingOreChunkBuilds.isEmpty() || meshBuildCoordinator.availableOreSlots() <= 0) return
-        val key = pendingOreChunkBuilds.minByOrNull { candidate ->
-            MineWorldGeometry.distance(OreChunkPlanner.chunkCentre(candidate), state.tunnel.end)
+        if (pendingOreChunkBuilds.isEmpty() || meshBuildCoordinator.availableOreSlots() <= 0) return
+        val next = pendingOreChunkBuilds.entries.minByOrNull { entry ->
+            MineWorldGeometry.distance(OreChunkPlanner.chunkCentre(entry.key), state.tunnel.end)
         } ?: return
+        val key = next.key
+        val gridStep = next.value
         val body = state.oreBodies.firstOrNull { it.id == key.bodyId }
         if (body == null || key !in OreChunkPlanner.chunksForBody(body, state.bounds)) {
             pendingOreChunkBuilds.remove(key)
@@ -708,7 +739,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 key = key,
                 state = state,
                 body = body,
-                gridStepMetres = OreMeshBuilder.BODY_GRID_STEP_METRES,
+                gridStepMetres = gridStep,
             ),
         )
         if (accepted) pendingOreChunkBuilds.remove(key)
@@ -1115,6 +1146,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 frameTimeMs = if (fps > 0) 1000f / fps.toFloat() else 0f,
                 lastChunkBuildMs = lastChunkBuildMs,
                 lastOreChunkBuildMs = lastOreChunkBuildMs,
+                lastOreGridStepMetres = lastOreGridStepMetres,
                 peakChunkBuildMs = peakChunkBuildMs,
                 peakOreChunkBuildMs = peakOreChunkBuildMs,
                 lastCapBuildMs = lastCapBuildMs,
@@ -1177,6 +1209,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         const val PAN_SCREEN_SCALE = 1.35f
         const val STATS_WINDOW_NANOS = 500_000_000L
         const val ACTIVE_REMESH_DISTANCE_METRES = 1.2f
+        const val LIVE_ORE_GRID_STEP_METRES = 1.2f
         const val ACTIVE_GRID_STEP_METRES = 1.6f
         const val REFINED_GRID_STEP_METRES = 1.0f
         const val SLICE_SEGMENT_TARGET_METRES = 1.2f

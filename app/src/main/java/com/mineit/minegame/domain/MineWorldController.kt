@@ -3,6 +3,17 @@ package com.mineit.minegame.domain
 import kotlin.math.cos
 import kotlin.math.sin
 
+data class MineTickDiagnostics(
+    val totalMs: Float,
+    val materialMs: Float,
+    val discoveryMs: Float,
+    val segmentLengthMetres: Float,
+    val newExcavatedVolumeCubicMetres: Float,
+    val oreVolumeCubicMetres: Float,
+    val wasteRockVolumeCubicMetres: Float,
+    val classification: ExcavationClassificationDiagnostics,
+)
+
 object MineWorldController {
     const val CHUNK_SIZE_METRES = 24f
     const val ROCK_DENSITY_TONNES_PER_CUBIC_METRE = 2.7f
@@ -69,8 +80,13 @@ object MineWorldController {
 
     fun stopDigging(state: MineWorldState): MineWorldState = state.copy(isDigging = false)
 
-    fun tick(state: MineWorldState, deltaSeconds: Float): MineWorldState {
+    fun tick(
+        state: MineWorldState,
+        deltaSeconds: Float,
+        onDiagnostics: ((MineTickDiagnostics) -> Unit)? = null,
+    ): MineWorldState {
         if (!state.isDigging || deltaSeconds <= 0f) return state
+        val tickStart = System.nanoTime()
 
         val boundedDelta = deltaSeconds.coerceAtMost(MAX_TICK_SECONDS)
         val heading = normalizeHeading(
@@ -117,17 +133,20 @@ object MineWorldController {
             )
         }
 
+        var classificationDiagnostics = ExcavationClassificationDiagnostics(0f, 0, 0, 0, 0, 0)
         val material = MineWorldGeometry.classifyNewExcavation(
             start = start,
             end = target,
             tunnelRadiusMetres = state.tunnel.radiusMetres,
             existingTunnelSegments = state.tunnel.segments,
             oreBodies = state.oreBodies,
+            onDiagnostics = { classificationDiagnostics = it },
         )
         val minedBodyIds = material.oreVolumeCubicMetresByBodyId
             .filterValues { it > MIN_MINED_VOLUME_CUBIC_METRES }
             .keys
 
+        val discoveryStart = System.nanoTime()
         val newlyDiscoveredIds = state.oreBodies.asSequence()
             .filterNot { it.id in state.discoveredOreBodyIds }
             .filter { body ->
@@ -142,6 +161,7 @@ object MineWorldController {
             .map { it.id }
             .toSet()
 
+        val discoveryMs = (System.nanoTime() - discoveryStart) / 1_000_000f
         val bodyTypesById = state.oreBodies.associate { it.id to it.type }
         val minedOreByType = state.minedOreVolumeCubicMetresByType.toMutableMap()
         material.oreVolumeCubicMetresByBodyId.forEach { (bodyId, volume) ->
@@ -153,7 +173,7 @@ object MineWorldController {
         val tunnel = state.tunnel.copy(points = state.tunnel.points + target)
         val extent = expandExtent(state.extent, target)
 
-        return state.copy(
+        val nextState = state.copy(
             tunnel = tunnel,
             extent = extent,
             headingDegrees = heading,
@@ -163,6 +183,19 @@ object MineWorldController {
             discoveredOreBodyIds = state.discoveredOreBodyIds + newlyDiscoveredIds,
             isDigging = state.isDigging && !exitsSurface,
         )
+        onDiagnostics?.invoke(
+            MineTickDiagnostics(
+                totalMs = (System.nanoTime() - tickStart) / 1_000_000f,
+                materialMs = classificationDiagnostics.elapsedMs,
+                discoveryMs = discoveryMs,
+                segmentLengthMetres = segmentLength,
+                newExcavatedVolumeCubicMetres = material.newExcavatedVolumeCubicMetres,
+                oreVolumeCubicMetres = material.oreVolumeCubicMetres,
+                wasteRockVolumeCubicMetres = material.wasteRockVolumeCubicMetres,
+                classification = classificationDiagnostics,
+            ),
+        )
+        return nextState
     }
 
     fun reset(): MineWorldState = MineWorldState()

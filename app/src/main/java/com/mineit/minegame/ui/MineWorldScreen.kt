@@ -19,12 +19,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +35,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -49,6 +53,10 @@ import com.mineit.minegame.ui.render.MineSurfaceView
 import com.mineit.minegame.ui.render.OrbitGestureMode
 import com.mineit.minegame.ui.render.RenderPerformanceStats
 import com.mineit.minegame.ui.render.SliceConfiguration
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -63,6 +71,7 @@ fun MineWorldScreen(
     viewModel: MineWorldViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val tickDiagnostics by viewModel.tickDiagnostics.collectAsStateWithLifecycle()
     var surfaceView by remember { mutableStateOf<MineSurfaceView?>(null) }
     var performanceStats by remember { mutableStateOf(RenderPerformanceStats()) }
     var selectedSliceAxis by remember { mutableStateOf(ClipAxis.X) }
@@ -75,7 +84,23 @@ fun MineWorldScreen(
     var seeOre by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(true) }
     var selectedPanel by remember { mutableStateOf(ControlPanel.CONTROL) }
+    val diagnosticsLog = remember { MineDiagnosticsLog() }
+    var diagnosticRecordCount by remember { mutableStateOf(0) }
+    var diagnosticExportStatus by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val latestState by rememberUpdatedState(state)
+    val latestRender by rememberUpdatedState(performanceStats)
+    val latestTick by rememberUpdatedState(tickDiagnostics?.diagnostics)
     val lifecycleOwner = LocalLifecycleOwner.current
+    val exportDiagnostics = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(diagnosticsLog.toCsv()) }
+                    ?: error("Unable to open selected file")
+            }.onSuccess { diagnosticExportStatus = "Diagnostics saved" }
+                .onFailure { diagnosticExportStatus = "Export failed: ${it.message ?: "unknown error"}" }
+        }
+    }
     val selectedFraction = sliceConfiguration.fraction(selectedSliceAxis)
     val selectedFlipped = sliceConfiguration.isFlipped(selectedSliceAxis)
     val selectedEnabled = sliceConfiguration.isEnabled(selectedSliceAxis)
@@ -83,6 +108,29 @@ fun MineWorldScreen(
     LaunchedEffect(followDigger, state.tunnel.end, state.extent) {
         if (followDigger) {
             sliceConfiguration = sliceConfiguration.withFollowFractions(FollowSlicePlanner.forDigger(state))
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            diagnosticsLog.record("sample", latestState, latestRender, latestTick)
+            diagnosticRecordCount = diagnosticsLog.recordCount
+        }
+    }
+
+    LaunchedEffect(tickDiagnostics?.sequence) {
+        val tick = tickDiagnostics?.diagnostics ?: return@LaunchedEffect
+        if (tick.totalMs >= 20f || tick.materialMs >= 20f || tick.discoveryMs >= 20f) {
+            diagnosticsLog.record("tick_spike", state, performanceStats, tick)
+            diagnosticRecordCount = diagnosticsLog.recordCount
+        }
+    }
+
+    LaunchedEffect(performanceStats.lastChunkBuildMs, performanceStats.lastOreChunkBuildMs, performanceStats.chunksRebuilt, performanceStats.oreChunksRebuilt) {
+        if (performanceStats.chunksRebuilt > 0 || performanceStats.oreChunksRebuilt > 0) {
+            diagnosticsLog.record("mesh_event", state, performanceStats, tickDiagnostics?.diagnostics)
+            diagnosticRecordCount = diagnosticsLog.recordCount
         }
     }
 
@@ -174,6 +222,17 @@ fun MineWorldScreen(
             seeOre = seeOre,
             showDiagnostics = showDiagnostics,
             performanceStats = performanceStats,
+            diagnosticRecordCount = diagnosticRecordCount,
+            diagnosticExportStatus = diagnosticExportStatus,
+            onExportDiagnostics = {
+                val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.UK).format(Date())
+                exportDiagnostics.launch("mineit-diagnostics-$stamp.csv")
+            },
+            onClearDiagnostics = {
+                diagnosticsLog.clear()
+                diagnosticRecordCount = 0
+                diagnosticExportStatus = "Diagnostics cleared"
+            },
             onSliceAxisChange = { selectedSliceAxis = it },
             onSliceFractionChange = { value ->
                 sliceConfiguration = sliceConfiguration.withFraction(selectedSliceAxis, value)
@@ -222,7 +281,7 @@ private fun MineWorldHeader(state: MineWorldState) {
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "CHUNKED SUBTRACTIVE ORE MESHING",
+                    text = "LIVE ORE + DIAGNOSTIC CAPTURE",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -279,7 +338,7 @@ private fun PerformanceOverlay(
             append("${stats.framesPerSecond} fps  ${format1(stats.frameTimeMs)}ms\n")
             append("rock ${format1(stats.lastChunkBuildMs)}ms")
             if (stats.chunksRebuilt > 0) append(" ×${stats.chunksRebuilt}")
-            append("  ore ${format1(stats.lastOreChunkBuildMs)}ms")
+            append("  ore ${format1(stats.lastOreChunkBuildMs)}ms@${format1(stats.lastOreGridStepMetres)}m")
             if (stats.oreChunksRebuilt > 0) append(" ×${stats.oreChunksRebuilt}")
             append("\ncap ${format1(stats.lastCapBuildMs)}ms  upload ${format1(stats.lastUploadMs)}ms\n")
             append("${stats.triangleCount / 1000}k tris (${stats.oreTriangleCount / 1000}k ore)  R${stats.cachedChunks}/O${stats.cachedOreChunks} chunks\n")
@@ -308,6 +367,10 @@ private fun MineWorldControls(
     seeOre: Boolean,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
+    diagnosticRecordCount: Int,
+    diagnosticExportStatus: String?,
+    onExportDiagnostics: () -> Unit,
+    onClearDiagnostics: () -> Unit,
     onSliceAxisChange: (ClipAxis) -> Unit,
     onSliceFractionChange: (Float) -> Unit,
     onFlipSlice: () -> Unit,
@@ -373,6 +436,10 @@ private fun MineWorldControls(
                 state = state,
                 showDiagnostics = showDiagnostics,
                 performanceStats = performanceStats,
+                diagnosticRecordCount = diagnosticRecordCount,
+                diagnosticExportStatus = diagnosticExportStatus,
+                onExportDiagnostics = onExportDiagnostics,
+                onClearDiagnostics = onClearDiagnostics,
                 onToggleDiagnostics = onToggleDiagnostics,
                 onResetMine = onResetMine,
             )
@@ -721,6 +788,10 @@ private fun OtherPanelContent(
     state: MineWorldState,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
+    diagnosticRecordCount: Int,
+    diagnosticExportStatus: String?,
+    onExportDiagnostics: () -> Unit,
+    onClearDiagnostics: () -> Unit,
     onToggleDiagnostics: () -> Unit,
     onResetMine: () -> Unit,
 ) {
@@ -739,6 +810,16 @@ private fun OtherPanelContent(
             Text("RESET MINE")
         }
     }
+
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        Button(onClick = onExportDiagnostics, modifier = Modifier.weight(1f)) { Text("EXPORT LOG") }
+        OutlinedButton(onClick = onClearDiagnostics, modifier = Modifier.weight(1f)) { Text("CLEAR LOG") }
+    }
+    Text(
+        text = "$diagnosticRecordCount diagnostic rows • 1s samples + spike/mesh events" +
+            (diagnosticExportStatus?.let { " • $it" } ?: ""),
+        color = Color(0xFF80CBC4), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp),
+    )
 
     Text(
         text = "MINED: Gold ${state.minedOreVolumeCubicMetres(OreType.GOLD).roundToInt()}m³ • " +

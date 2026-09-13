@@ -2,11 +2,11 @@
 
 Native Android mining-game prototype in the MineIT universe.
 
-## Current prototype — 0.13.1
+## Current prototype — 0.13.2
 
 The mine is a genuine **3D geological volume** with renderer-independent gameplay rules and a lightweight native OpenGL renderer.
 
-0.13.1 refines the true subtractive ore renderer: immutable deposits are now meshed as local 12m cache chunks on a dedicated background worker, so a cutter pass rebuilds only nearby ore instead of polygonising the whole deposit on the GL thread.
+0.13.2 keeps the chunked subtractive ore renderer and adds coarse live ore remeshing while digging, plus exportable diagnostics with one-second samples and spike/mesh events.
 
 - the cutter partitions each newly excavated volume into **ore or waste rock exactly once**;
 - `excavated volume = waste-rock volume + mined-ore volume`;

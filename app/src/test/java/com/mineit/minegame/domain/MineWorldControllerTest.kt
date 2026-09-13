@@ -347,4 +347,17 @@ class MineWorldControllerTest {
         assertTrue(MineWorldGeometry.solidMargin(tunnelPoint, state.bounds, state.tunnel) < 0f)
         assertTrue(MineWorldGeometry.solidMargin(MinePoint3D(-12f, -12f, 12f), state.bounds, state.tunnel) > 0f)
     }
+
+    @Test
+    fun `tick diagnostics report material work without changing accounting`() {
+        var state = MineWorldState().copy(verticalAngleDegrees = 20f)
+        state = MineWorldController.startDigging(state)
+        var diagnostics: MineTickDiagnostics? = null
+        val next = MineWorldController.tick(state, 0.1f) { diagnostics = it }
+        val measured = requireNotNull(diagnostics)
+        assertTrue(measured.totalMs >= measured.materialMs)
+        assertTrue(measured.classification.candidateSamples > 0)
+        assertEquals(next.excavatedVolumeCubicMetres, next.wasteRockVolumeCubicMetres + next.totalMinedOreVolumeCubicMetres, 0.05f)
+    }
+
 }

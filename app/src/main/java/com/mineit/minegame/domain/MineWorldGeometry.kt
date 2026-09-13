@@ -14,6 +14,16 @@ data class ExcavationMaterialBreakdown(
         get() = oreVolumeCubicMetresByBodyId.values.sum()
 }
 
+
+data class ExcavationClassificationDiagnostics(
+    val elapsedMs: Float,
+    val candidateSamples: Int,
+    val newMaterialSamples: Int,
+    val nearbyExistingSegments: Int,
+    val existingTunnelChecks: Int,
+    val oreFieldEvaluations: Int,
+)
+
 object MineWorldGeometry {
     private const val MATERIAL_SAMPLE_SPACING_METRES = 0.45f
 
@@ -122,7 +132,9 @@ object MineWorldGeometry {
         tunnelRadiusMetres: Float,
         existingTunnelSegments: Collection<TunnelSegment>,
         oreBodies: List<OreBody>,
+        onDiagnostics: ((ExcavationClassificationDiagnostics) -> Unit)? = null,
     ): ExcavationMaterialBreakdown {
+        val diagnosticStart = System.nanoTime()
         val length = distance(start, end)
         if (length < 0.001f || tunnelRadiusMetres <= 0f) {
             return ExcavationMaterialBreakdown(0f, 0f, emptyMap())
@@ -177,6 +189,8 @@ object MineWorldGeometry {
         val sampleVolume = cylinderVolume(tunnelRadiusMetres, length) /
             (longitudinalSteps * crossOffsets.size).toFloat()
         var newSampleCount = 0
+        var existingTunnelChecks = 0
+        var oreFieldEvaluations = 0
         val oreSamplesByBodyId = mutableMapOf<String, Int>()
 
         for (step in 0 until longitudinalSteps) {
@@ -193,19 +207,22 @@ object MineWorldGeometry {
                 // Air above the grass surface is not mined material.
                 if (sample.z < 0f) return@forEach
 
-                if (
-                    nearbyExistingSegments.any { existing ->
-                        isInsideFiniteCylinder(sample, existing, tunnelRadiusMetres)
+                var alreadyExcavated = false
+                for (existing in nearbyExistingSegments) {
+                    existingTunnelChecks += 1
+                    if (isInsideFiniteCylinder(sample, existing, tunnelRadiusMetres)) {
+                        alreadyExcavated = true
+                        break
                     }
-                ) {
-                    return@forEach
                 }
+                if (alreadyExcavated) return@forEach
 
                 newSampleCount += 1
 
                 var bestBodyId: String? = null
                 var bestMargin = 0f
                 oreBodies.forEach { body ->
+                    oreFieldEvaluations += 1
                     val margin = oreMargin(sample, body.nodes)
                     if (margin > bestMargin) {
                         bestMargin = margin
@@ -224,6 +241,16 @@ object MineWorldGeometry {
         val oreVolume = oreVolumes.values.sum()
         val wasteVolume = (newVolume - oreVolume).coerceAtLeast(0f)
 
+        onDiagnostics?.invoke(
+            ExcavationClassificationDiagnostics(
+                elapsedMs = (System.nanoTime() - diagnosticStart) / 1_000_000f,
+                candidateSamples = longitudinalSteps * crossOffsets.size,
+                newMaterialSamples = newSampleCount,
+                nearbyExistingSegments = nearbyExistingSegments.size,
+                existingTunnelChecks = existingTunnelChecks,
+                oreFieldEvaluations = oreFieldEvaluations,
+            ),
+        )
         return ExcavationMaterialBreakdown(
             newExcavatedVolumeCubicMetres = newVolume,
             wasteRockVolumeCubicMetres = wasteVolume,
