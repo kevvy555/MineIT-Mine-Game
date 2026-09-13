@@ -3,6 +3,7 @@ package com.mineit.minegame.ui.render
 import com.mineit.minegame.domain.MinePoint3D
 import com.mineit.minegame.domain.MineWorldState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,5 +33,33 @@ class ViewPlanningTest {
 
         listOf(low.x, low.y, low.z).forEach { assertTrue(it >= 0.02f) }
         listOf(high.x, high.y, high.z).forEach { assertTrue(it <= 0.98f) }
+    }
+
+    @Test
+    fun sliceConfigurationKeepsIndependentAxisPositionsWhenSwitchingCuts() {
+        val initial = SliceConfiguration(
+            fractions = SliceFractions(x = 0.20f, y = 0.40f, z = 0.60f),
+        )
+
+        val withY = initial.toggleAxis(ClipAxis.Y).withFraction(ClipAxis.Y, 0.72f)
+        val withZ = withY.toggleAxis(ClipAxis.Z).withFraction(ClipAxis.Z, 0.31f)
+
+        assertEquals(0.20f, withZ.fraction(ClipAxis.X), 0.001f)
+        assertEquals(0.72f, withZ.fraction(ClipAxis.Y), 0.001f)
+        assertEquals(0.31f, withZ.fraction(ClipAxis.Z), 0.001f)
+        assertTrue(withZ.isEnabled(ClipAxis.X))
+        assertTrue(withZ.isEnabled(ClipAxis.Y))
+        assertTrue(withZ.isEnabled(ClipAxis.Z))
+    }
+
+    @Test
+    fun sliceConfigurationTracksCutSidePerAxisIndependently() {
+        val configuration = SliceConfiguration()
+            .toggleFlipped(ClipAxis.Y)
+            .toggleFlipped(ClipAxis.Z)
+
+        assertFalse(configuration.isFlipped(ClipAxis.X))
+        assertTrue(configuration.isFlipped(ClipAxis.Y))
+        assertTrue(configuration.isFlipped(ClipAxis.Z))
     }
 }

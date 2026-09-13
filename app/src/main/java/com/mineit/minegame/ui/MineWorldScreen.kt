@@ -46,7 +46,7 @@ import com.mineit.minegame.ui.render.FollowSlicePlanner
 import com.mineit.minegame.ui.render.MineSurfaceView
 import com.mineit.minegame.ui.render.OrbitGestureMode
 import com.mineit.minegame.ui.render.RenderPerformanceStats
-import com.mineit.minegame.ui.render.SliceFractions
+import com.mineit.minegame.ui.render.SliceConfiguration
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -63,10 +63,8 @@ fun MineWorldScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     var surfaceView by remember { mutableStateOf<MineSurfaceView?>(null) }
     var performanceStats by remember { mutableStateOf(RenderPerformanceStats()) }
-    var clipAxis by remember { mutableStateOf(ClipAxis.X) }
-    var sliceFractions by remember { mutableStateOf(SliceFractions(0.18f, 0.18f, 0.18f)) }
-    var clipFlipped by remember { mutableStateOf(false) }
-    var clipEnabled by remember { mutableStateOf(true) }
+    var selectedSliceAxis by remember { mutableStateOf(ClipAxis.X) }
+    var sliceConfiguration by remember { mutableStateOf(SliceConfiguration()) }
     var rockVisible by remember { mutableStateOf(true) }
     var followDigger by remember { mutableStateOf(false) }
     var cameraMode by remember { mutableStateOf(CameraMode.ORBIT) }
@@ -75,11 +73,13 @@ fun MineWorldScreen(
     var showDiagnostics by remember { mutableStateOf(true) }
     var selectedPanel by remember { mutableStateOf(ControlPanel.CONTROL) }
     val lifecycleOwner = LocalLifecycleOwner.current
-    val clipFraction = sliceFractions.forAxis(clipAxis)
+    val selectedFraction = sliceConfiguration.fraction(selectedSliceAxis)
+    val selectedFlipped = sliceConfiguration.isFlipped(selectedSliceAxis)
+    val selectedEnabled = sliceConfiguration.isEnabled(selectedSliceAxis)
 
     LaunchedEffect(followDigger, state.tunnel.end, state.extent) {
         if (followDigger) {
-            sliceFractions = FollowSlicePlanner.forDigger(state)
+            sliceConfiguration = sliceConfiguration.withFollowFractions(FollowSlicePlanner.forDigger(state))
         }
     }
 
@@ -125,7 +125,7 @@ fun MineWorldScreen(
                     MineSurfaceView(context).also { view ->
                         surfaceView = view
                         view.setWorldState(state)
-                        view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                        view.setSlices(sliceConfiguration)
                         view.setRockVisible(rockVisible)
                         view.setFollowDigger(followDigger)
                         view.setCameraMode(cameraMode)
@@ -135,7 +135,7 @@ fun MineWorldScreen(
                 },
                 update = { view ->
                     view.setWorldState(state)
-                    view.setClip(clipAxis, clipFraction, clipFlipped, clipEnabled)
+                    view.setSlices(sliceConfiguration)
                     view.setRockVisible(rockVisible)
                     view.setFollowDigger(followDigger)
                     view.setCameraMode(cameraMode)
@@ -159,10 +159,8 @@ fun MineWorldScreen(
             state = state,
             selectedPanel = selectedPanel,
             onPanelChange = { selectedPanel = it },
-            clipAxis = clipAxis,
-            clipFraction = clipFraction,
-            clipFlipped = clipFlipped,
-            clipEnabled = clipEnabled,
+            selectedSliceAxis = selectedSliceAxis,
+            sliceConfiguration = sliceConfiguration,
             rockVisible = rockVisible,
             followDigger = followDigger,
             cameraMode = cameraMode,
@@ -170,16 +168,16 @@ fun MineWorldScreen(
             seeOre = seeOre,
             showDiagnostics = showDiagnostics,
             performanceStats = performanceStats,
-            onClipAxisChange = { clipAxis = it },
-            onClipFractionChange = { value ->
-                sliceFractions = when (clipAxis) {
-                    ClipAxis.X -> sliceFractions.copy(x = value)
-                    ClipAxis.Y -> sliceFractions.copy(y = value)
-                    ClipAxis.Z -> sliceFractions.copy(z = value)
-                }
+            onSliceAxisChange = { selectedSliceAxis = it },
+            onSliceFractionChange = { value ->
+                sliceConfiguration = sliceConfiguration.withFraction(selectedSliceAxis, value)
             },
-            onFlipClip = { clipFlipped = !clipFlipped },
-            onToggleClip = { clipEnabled = !clipEnabled },
+            onFlipSlice = {
+                sliceConfiguration = sliceConfiguration.toggleFlipped(selectedSliceAxis)
+            },
+            onToggleSelectedSlice = {
+                sliceConfiguration = sliceConfiguration.toggleAxis(selectedSliceAxis)
+            },
             onToggleRock = { rockVisible = !rockVisible },
             onToggleFollow = { followDigger = !followDigger },
             onCameraModeChange = { cameraMode = it },
@@ -211,13 +209,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.10.1",
+                    text = "MINEIT // 3D GEOLOGY 0.11.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "PAN + SOLID CT ORE INSPECTION",
+                    text = "TRI-PLANAR CT + BOUNDED ORE",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -288,10 +286,8 @@ private fun MineWorldControls(
     state: MineWorldState,
     selectedPanel: ControlPanel,
     onPanelChange: (ControlPanel) -> Unit,
-    clipAxis: ClipAxis,
-    clipFraction: Float,
-    clipFlipped: Boolean,
-    clipEnabled: Boolean,
+    selectedSliceAxis: ClipAxis,
+    sliceConfiguration: SliceConfiguration,
     rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
@@ -299,10 +295,10 @@ private fun MineWorldControls(
     seeOre: Boolean,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
-    onClipAxisChange: (ClipAxis) -> Unit,
-    onClipFractionChange: (Float) -> Unit,
-    onFlipClip: () -> Unit,
-    onToggleClip: () -> Unit,
+    onSliceAxisChange: (ClipAxis) -> Unit,
+    onSliceFractionChange: (Float) -> Unit,
+    onFlipSlice: () -> Unit,
+    onToggleSelectedSlice: () -> Unit,
     onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
@@ -338,19 +334,17 @@ private fun MineWorldControls(
 
             ControlPanel.VIEW -> ViewPanelContent(
                 state = state,
-                clipAxis = clipAxis,
-                clipFraction = clipFraction,
-                clipFlipped = clipFlipped,
-                clipEnabled = clipEnabled,
+                selectedSliceAxis = selectedSliceAxis,
+                sliceConfiguration = sliceConfiguration,
                 rockVisible = rockVisible,
                 followDigger = followDigger,
                 cameraMode = cameraMode,
                 orbitGestureMode = orbitGestureMode,
                 seeOre = seeOre,
-                onClipAxisChange = onClipAxisChange,
-                onClipFractionChange = onClipFractionChange,
-                onFlipClip = onFlipClip,
-                onToggleClip = onToggleClip,
+                onSliceAxisChange = onSliceAxisChange,
+                onSliceFractionChange = onSliceFractionChange,
+                onFlipSlice = onFlipSlice,
+                onToggleSelectedSlice = onToggleSelectedSlice,
                 onToggleRock = onToggleRock,
                 onToggleFollow = onToggleFollow,
                 onCameraModeChange = onCameraModeChange,
@@ -514,19 +508,17 @@ private fun ControlPanelContent(
 @Composable
 private fun ViewPanelContent(
     state: MineWorldState,
-    clipAxis: ClipAxis,
-    clipFraction: Float,
-    clipFlipped: Boolean,
-    clipEnabled: Boolean,
+    selectedSliceAxis: ClipAxis,
+    sliceConfiguration: SliceConfiguration,
     rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
     orbitGestureMode: OrbitGestureMode,
     seeOre: Boolean,
-    onClipAxisChange: (ClipAxis) -> Unit,
-    onClipFractionChange: (Float) -> Unit,
-    onFlipClip: () -> Unit,
-    onToggleClip: () -> Unit,
+    onSliceAxisChange: (ClipAxis) -> Unit,
+    onSliceFractionChange: (Float) -> Unit,
+    onFlipSlice: () -> Unit,
+    onToggleSelectedSlice: () -> Unit,
     onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
@@ -534,6 +526,10 @@ private fun ViewPanelContent(
     onToggleSeeOre: () -> Unit,
     onResetView: () -> Unit,
 ) {
+    val selectedFraction = sliceConfiguration.fraction(selectedSliceAxis)
+    val selectedFlipped = sliceConfiguration.isFlipped(selectedSliceAxis)
+    val selectedEnabled = sliceConfiguration.isEnabled(selectedSliceAxis)
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(7.dp),
@@ -602,17 +598,18 @@ private fun ViewPanelContent(
             ClipAxis.entries.forEach { axis ->
                 AxisButton(
                     axis = axis,
-                    selected = clipAxis == axis,
-                    onClick = { onClipAxisChange(axis) },
+                    selected = selectedSliceAxis == axis,
+                    active = sliceConfiguration.isEnabled(axis),
+                    onClick = { onSliceAxisChange(axis) },
                     modifier = Modifier.weight(1f),
                 )
             }
             ToggleButton(
-                selected = clipEnabled,
-                selectedText = "SLICE ON",
-                unselectedText = "FULL",
-                onClick = onToggleClip,
-                modifier = Modifier.weight(1.25f),
+                selected = selectedEnabled,
+                selectedText = "${selectedSliceAxis.name} CUT ON",
+                unselectedText = "${selectedSliceAxis.name} CUT OFF",
+                onClick = onToggleSelectedSlice,
+                modifier = Modifier.weight(1.35f),
             )
         }
 
@@ -621,19 +618,23 @@ private fun ViewPanelContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "${clipAxis.name} slice ${clipValue(state, clipAxis, clipFraction).roundToInt()}m",
+                text = "${selectedSliceAxis.name} slice ${clipValue(state, selectedSliceAxis, selectedFraction).roundToInt()}m" +
+                    "  •  ${sliceConfiguration.enabledAxes.size} cut${if (sliceConfiguration.enabledAxes.size == 1) "" else "s"} active",
                 color = Color(0xFFB5BEC8),
                 style = MaterialTheme.typography.labelMedium,
                 modifier = Modifier.weight(1f),
             )
-            OutlinedButton(onClick = onFlipClip) {
-                Text(if (clipFlipped) "FIRST SIDE" else "OTHER SIDE")
+            OutlinedButton(
+                onClick = onFlipSlice,
+                enabled = selectedEnabled,
+            ) {
+                Text(if (selectedFlipped) "FIRST SIDE" else "OTHER SIDE")
             }
         }
         Slider(
-            value = clipFraction,
-            onValueChange = onClipFractionChange,
-            valueRange = 0.02f..0.98f,
+            value = selectedFraction,
+            onValueChange = onSliceFractionChange,
+            valueRange = SliceConfiguration.MIN_SLICE_FRACTION..SliceConfiguration.MAX_SLICE_FRACTION,
         )
     } else {
         Text(
@@ -671,12 +672,12 @@ private fun ViewPanelContent(
 
     Text(
         text = when {
-            seeOre -> "SEE ORE adds all seeded deposits to the active CT face only. Gold, silver and copper are solid opaque cross-sections; intact rock stays opaque."
+            seeOre -> "SEE ORE reveals bounded solid ore only on enabled CT faces. Select X/Y/Z to adjust it; enabled cuts stay active together for tri-planar inspection."
             !rockVisible -> "Rock is hidden using a direct tunnel skin, so this view stays responsive even if detailed geology is still refining."
             cameraMode == CameraMode.DIGGER_POV -> "Digger POV looks straight out from just behind the cutter and ignores CT clipping."
             orbitGestureMode == OrbitGestureMode.PAN -> "PAN selected • drag to move the camera • pinch to zoom. Turn PAN off to rotate again."
-            followDigger -> "Follow keeps the camera and all X/Y/Z slice positions on the machine."
-            else -> "Drag to rotate • pinch to zoom • PAN enables drag-to-move • X/Y/Z slices inspect the solid geology."
+            followDigger -> "Follow keeps the camera and all X/Y/Z slice positions on the machine; enabled cuts remain simultaneous."
+            else -> "Select X/Y/Z to adjust that plane • use its CUT button to keep multiple planes active • drag rotates • pinch zooms."
         },
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
@@ -716,7 +717,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.10.1 keeps the immediate CT/global-shell architecture and makes SEE ORE a CT-only inspection aid with solid typed mineral cross-sections.",
+        text = "0.11 keeps the immediate global-shell architecture, clips ore to generated geology and supports simultaneous persistent X/Y/Z CT cuts.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),
@@ -815,20 +816,22 @@ private fun AnglePresetButton(
 private fun AxisButton(
     axis: ClipAxis,
     selected: Boolean,
+    active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier,
 ) {
+    val label = if (active) "${axis.name} ✓" else axis.name
     if (selected) {
         Button(
             onClick = onClick,
             modifier = modifier,
             colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF356B75)),
         ) {
-            Text(axis.name)
+            Text(label)
         }
     } else {
         OutlinedButton(onClick = onClick, modifier = modifier) {
-            Text(axis.name)
+            Text(label, color = if (active) Color(0xFF80CBC4) else Color.Unspecified)
         }
     }
 }

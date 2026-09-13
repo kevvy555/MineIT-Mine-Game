@@ -34,25 +34,16 @@ internal data class RenderPerformanceStats(
 /**
  * OpenGL presentation for the 3D mine.
  *
- * Expensive scalar-field work is limited to tunnel-bearing chunks. The geological world shell and
- * CT face are immediate meshes, so world growth and slice movement never wait behind the chunk
- * polygonisation queue.
+ * Expensive scalar-field work remains limited to tunnel-bearing chunks. The geological world shell
+ * and CT faces are immediate meshes. X/Y/Z clipping is performed simultaneously in the fragment
+ * shader, allowing persistent tri-planar inspection without duplicating world geometry.
  */
 internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     @Volatile
     private var worldState = MineWorldState()
 
     @Volatile
-    private var clipAxis = ClipAxis.X
-
-    @Volatile
-    private var clipFraction = 0.18f
-
-    @Volatile
-    private var clipFlipped = false
-
-    @Volatile
-    private var clipEnabled = true
+    private var slices = SliceConfiguration()
 
     @Volatile
     private var rockVisible = true
@@ -133,13 +124,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var processedState: MineWorldState? = null
     private var pipelineGeneration = 1L
 
-    private var sliceMesh: GlMesh? = null
+    private val sliceMeshes = linkedMapOf<ClipAxis, GlMesh?>()
+    private val oreSliceMeshes = linkedMapOf<ClipAxis, GlMesh?>()
     private var machineMesh: GlMesh? = null
     private var tunnelOverviewMesh: GlMesh? = null
     private var grassMesh: GlMesh? = null
     private var worldShellMesh: GlMesh? = null
     private var oreOverlayMesh: GlMesh? = null
-    private var oreSliceMesh: GlMesh? = null
 
     private val modelMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -149,10 +140,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
     private var mvpLocation = -1
     private var modelLocation = -1
-    private var clipAxisLocation = -1
-    private var clipValueLocation = -1
-    private var clipDirectionLocation = -1
+    private var clipValuesLocation = -1
+    private var clipDirectionsLocation = -1
     private var clipEnabledLocation = -1
+    private var boundsMinLocation = -1
+    private var boundsMaxLocation = -1
+    private var boundsClipEnabledLocation = -1
     private var alphaLocation = -1
     private var positionLocation = -1
     private var normalLocation = -1
@@ -200,21 +193,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         }
     }
 
-    fun setClip(axis: ClipAxis, fraction: Float, flipped: Boolean, enabled: Boolean) {
-        val boundedFraction = fraction.coerceIn(0f, 1f)
-        if (
-            axis != clipAxis ||
-            boundedFraction != clipFraction ||
-            flipped != clipFlipped ||
-            enabled != clipEnabled
-        ) {
-            sliceDirty = true
-            oreSliceDirty = true
-        }
-        clipAxis = axis
-        clipFraction = boundedFraction
-        clipFlipped = flipped
-        clipEnabled = enabled
+    fun setSlices(configuration: SliceConfiguration) {
+        val normalized = configuration.copy(
+            enabledAxes = configuration.enabledAxes.toSet(),
+            flippedAxes = configuration.flippedAxes.toSet(),
+        )
+        if (normalized == slices) return
+        slices = normalized
+        sliceDirty = true
+        oreSliceDirty = true
     }
 
     fun setFollowDigger(enabled: Boolean) {
@@ -304,13 +291,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         activeSliceDirty = false
         lastActiveRemeshPoint = null
         processedState = null
-        sliceMesh = null
+        sliceMeshes.clear()
+        oreSliceMeshes.clear()
         machineMesh = null
         tunnelOverviewMesh = null
         grassMesh = null
         worldShellMesh = null
         oreOverlayMesh = null
-        oreSliceMesh = null
         pipelineGeneration += 1L
         machineDirty = true
         tunnelOverviewDirty = true
@@ -344,8 +331,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         GLES20.glUniformMatrix4fv(mvpLocation, 1, false, mvpMatrix, 0)
         GLES20.glUniformMatrix4fv(modelLocation, 1, false, modelMatrix, 0)
         GLES20.glUniform1f(alphaLocation, 1f)
+        applyBoundsClip(state, enabled = false)
 
-        val showCutaway = rockVisible && clipEnabled && cameraMode == CameraMode.ORBIT
+        val showCutaway = rockVisible && slices.enabledAxes.isNotEmpty() && cameraMode == CameraMode.ORBIT
         if (rockVisible) {
             applyClipUniforms(state, enabled = showCutaway)
             drawMesh(worldShellMesh)
@@ -353,8 +341,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             chunkMeshes.values.forEach { cached -> drawMesh(cached.mesh) }
 
             if (showCutaway) {
-                applyClipUniforms(state, enabled = false)
-                drawMesh(sliceMesh)
+                slices.enabledAxes.forEach { axis ->
+                    applyClipUniforms(state, enabled = true, excludedAxis = axis)
+                    drawMesh(sliceMeshes[axis])
+                }
             }
         } else {
             applyClipUniforms(state, enabled = false)
@@ -362,17 +352,24 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             drawMesh(tunnelOverviewMesh)
         }
 
-        // A genuinely discovered body may be inspected as a connected opaque body. It still obeys
-        // normal rock/slice depth and is never promoted to an x-ray overlay by SEE ORE.
+        // Discovered connected bodies stay opaque and obey both geological bounds and every active
+        // cut plane. SEE ORE never turns these into an x-ray overlay.
         if (oreOverlayMesh != null) {
+            applyBoundsClip(state, enabled = true)
             applyClipUniforms(state, enabled = showCutaway)
             drawMesh(oreOverlayMesh)
+            applyBoundsClip(state, enabled = false)
         }
 
-        // SEE ORE is CT-only. Filled typed cross-sections sit directly on the active rock cut face.
-        if (showCutaway && oreSliceMesh != null) {
-            applyClipUniforms(state, enabled = false)
-            drawMesh(oreSliceMesh)
+        // CT ore is drawn per axis. Its own clip plane is excluded so the face itself survives;
+        // other enabled axes trim that face to the same retained octant as the rock.
+        if (showCutaway) {
+            applyBoundsClip(state, enabled = true)
+            slices.enabledAxes.forEach { axis ->
+                applyClipUniforms(state, enabled = true, excludedAxis = axis)
+                drawMesh(oreSliceMeshes[axis])
+            }
+            applyBoundsClip(state, enabled = false)
         }
 
         if (cameraMode == CameraMode.ORBIT) {
@@ -449,15 +446,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                     chunksTouchedDuringDigging += affected
                 }
 
-                if (
-                    ChunkMeshPlanner.segmentTouchesSlice(
-                        segment = segment,
-                        axis = clipAxis,
-                        clipValue = MineMeshBuilder.clipValue(state, clipAxis, clipFraction),
-                        tunnelRadiusMetres = state.tunnel.radiusMetres,
-                        paddingMetres = 0.5f,
-                    )
-                ) {
+                if (segmentTouchesAnyActiveSlice(state, segment)) {
                     activeSliceDirty = true
                 }
             }
@@ -486,6 +475,17 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
         processedState = state
     }
+
+    private fun segmentTouchesAnyActiveSlice(state: MineWorldState, segment: TunnelSegment): Boolean =
+        slices.enabledAxes.any { axis ->
+            ChunkMeshPlanner.segmentTouchesSlice(
+                segment = segment,
+                axis = axis,
+                clipValue = MineMeshBuilder.clipValue(state, axis, slices.fraction(axis)),
+                tunnelRadiusMetres = state.tunnel.radiusMetres,
+                paddingMetres = 0.5f,
+            )
+        }
 
     private fun shouldFlushActiveRemesh(state: MineWorldState, extentChanged: Boolean): Boolean {
         if (extentChanged) return true
@@ -675,57 +675,60 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         }
 
         if (oreSliceDirty) {
-            val uploadStart = System.nanoTime()
-            val built = if (rockVisible && clipEnabled && cameraMode == CameraMode.ORBIT) {
-                OreMeshBuilder.buildSlice(
-                    state = state,
-                    axis = clipAxis,
-                    fraction = clipFraction,
-                    flipped = clipFlipped,
-                    showAll = seeOre,
-                )
-            } else {
-                MineMesh(FloatArray(0), 0)
+            oreSliceMeshes.values.forEach(::deleteMesh)
+            oreSliceMeshes.clear()
+            if (rockVisible && slices.enabledAxes.isNotEmpty() && cameraMode == CameraMode.ORBIT) {
+                val uploadStart = System.nanoTime()
+                slices.enabledAxes.forEach { axis ->
+                    oreSliceMeshes[axis] = uploadMesh(
+                        OreMeshBuilder.buildSlice(
+                            state = state,
+                            axis = axis,
+                            fraction = slices.fraction(axis),
+                            flipped = slices.isFlipped(axis),
+                            showAll = seeOre,
+                        ),
+                    )
+                }
+                lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
             }
-            val uploaded = uploadMesh(built)
-            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
-            deleteMesh(oreSliceMesh)
-            oreSliceMesh = uploaded
             oreSliceDirty = false
         }
 
-        if (sliceDirty && rockVisible && clipEnabled && cameraMode == CameraMode.ORBIT) {
-            val clipValue = MineMeshBuilder.clipValue(state, clipAxis, clipFraction)
-            val nearbySegments = linkedSetOf<TunnelSegment>()
-            ChunkMeshPlanner.chunksNearSlice(
-                extent = state.extent,
-                axis = clipAxis,
-                clipValue = clipValue,
-                paddingMetres = state.tunnel.radiusMetres + 2f,
-            ).forEach { key ->
-                segmentIndex[key]?.let(nearbySegments::addAll)
+        if (sliceDirty) {
+            sliceMeshes.values.forEach(::deleteMesh)
+            sliceMeshes.clear()
+            if (rockVisible && slices.enabledAxes.isNotEmpty() && cameraMode == CameraMode.ORBIT) {
+                val buildStart = System.nanoTime()
+                slices.enabledAxes.forEach { axis ->
+                    val clipValue = MineMeshBuilder.clipValue(state, axis, slices.fraction(axis))
+                    val nearbySegments = linkedSetOf<TunnelSegment>()
+                    ChunkMeshPlanner.chunksNearSlice(
+                        extent = state.extent,
+                        axis = axis,
+                        clipValue = clipValue,
+                        paddingMetres = state.tunnel.radiusMetres + 2f,
+                    ).forEach { key ->
+                        segmentIndex[key]?.let(nearbySegments::addAll)
+                    }
+                    val reducedSegments = TunnelSegmentReducer.reduce(
+                        nearbySegments,
+                        targetLengthMetres = SLICE_SEGMENT_TARGET_METRES,
+                    )
+                    sliceMeshes[axis] = uploadMesh(
+                        MineMeshBuilder.buildCutCap(
+                            // Typed ore is rendered independently; suppress the legacy generic ore
+                            // colour from the rock cap without altering canonical domain state.
+                            state = state.copy(discoveredOreBodyIds = emptySet()),
+                            axis = axis,
+                            fraction = slices.fraction(axis),
+                            flipped = slices.isFlipped(axis),
+                            tunnelSegments = reducedSegments,
+                        ),
+                    )
+                }
+                lastCapBuildMs = nanosToMs(System.nanoTime() - buildStart)
             }
-            val reducedSegments = TunnelSegmentReducer.reduce(
-                nearbySegments,
-                targetLengthMetres = SLICE_SEGMENT_TARGET_METRES,
-            )
-
-            val buildStart = System.nanoTime()
-            val built = MineMeshBuilder.buildCutCap(
-                // Typed ore is rendered by OreMeshBuilder so the legacy generic purple POC ore
-                // path is suppressed on the rock cap without changing canonical domain state.
-                state = state.copy(discoveredOreBodyIds = emptySet()),
-                axis = clipAxis,
-                fraction = clipFraction,
-                flipped = clipFlipped,
-                tunnelSegments = reducedSegments,
-            )
-            lastCapBuildMs = nanosToMs(System.nanoTime() - buildStart)
-            val uploadStart = System.nanoTime()
-            val uploaded = uploadMesh(built)
-            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
-            deleteMesh(sliceMesh)
-            sliceMesh = uploaded
             sliceDirty = false
         }
     }
@@ -774,11 +777,41 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
     }
 
-    private fun applyClipUniforms(state: MineWorldState, enabled: Boolean) {
-        GLES20.glUniform1i(clipAxisLocation, clipAxis.ordinal)
-        GLES20.glUniform1f(clipValueLocation, MineMeshBuilder.clipValue(state, clipAxis, clipFraction))
-        GLES20.glUniform1f(clipDirectionLocation, if (clipFlipped) -1f else 1f)
-        GLES20.glUniform1f(clipEnabledLocation, if (enabled) 1f else 0f)
+    private fun applyClipUniforms(
+        state: MineWorldState,
+        enabled: Boolean,
+        excludedAxis: ClipAxis? = null,
+    ) {
+        GLES20.glUniform3f(
+            clipValuesLocation,
+            MineMeshBuilder.clipValue(state, ClipAxis.X, slices.fraction(ClipAxis.X)),
+            MineMeshBuilder.clipValue(state, ClipAxis.Y, slices.fraction(ClipAxis.Y)),
+            MineMeshBuilder.clipValue(state, ClipAxis.Z, slices.fraction(ClipAxis.Z)),
+        )
+        GLES20.glUniform3f(
+            clipDirectionsLocation,
+            clipDirection(ClipAxis.X),
+            clipDirection(ClipAxis.Y),
+            clipDirection(ClipAxis.Z),
+        )
+        GLES20.glUniform3f(
+            clipEnabledLocation,
+            clipFlag(ClipAxis.X, enabled, excludedAxis),
+            clipFlag(ClipAxis.Y, enabled, excludedAxis),
+            clipFlag(ClipAxis.Z, enabled, excludedAxis),
+        )
+    }
+
+    private fun clipDirection(axis: ClipAxis): Float = if (slices.isFlipped(axis)) -1f else 1f
+
+    private fun clipFlag(axis: ClipAxis, enabled: Boolean, excludedAxis: ClipAxis?): Float =
+        if (enabled && axis != excludedAxis && slices.isEnabled(axis)) 1f else 0f
+
+    private fun applyBoundsClip(state: MineWorldState, enabled: Boolean) {
+        val bounds = state.bounds
+        GLES20.glUniform3f(boundsMinLocation, bounds.minX, bounds.minY, bounds.minZ)
+        GLES20.glUniform3f(boundsMaxLocation, bounds.maxX, bounds.maxY, bounds.maxZ)
+        GLES20.glUniform1f(boundsClipEnabledLocation, if (enabled) 1f else 0f)
     }
 
     private fun updateMatrices(state: MineWorldState) {
@@ -925,10 +958,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private fun cacheShaderLocations() {
         mvpLocation = GLES20.glGetUniformLocation(program, "uMvp")
         modelLocation = GLES20.glGetUniformLocation(program, "uModel")
-        clipAxisLocation = GLES20.glGetUniformLocation(program, "uClipAxis")
-        clipValueLocation = GLES20.glGetUniformLocation(program, "uClipValue")
-        clipDirectionLocation = GLES20.glGetUniformLocation(program, "uClipDirection")
+        clipValuesLocation = GLES20.glGetUniformLocation(program, "uClipValues")
+        clipDirectionsLocation = GLES20.glGetUniformLocation(program, "uClipDirections")
         clipEnabledLocation = GLES20.glGetUniformLocation(program, "uClipEnabled")
+        boundsMinLocation = GLES20.glGetUniformLocation(program, "uBoundsMin")
+        boundsMaxLocation = GLES20.glGetUniformLocation(program, "uBoundsMax")
+        boundsClipEnabledLocation = GLES20.glGetUniformLocation(program, "uBoundsClipEnabled")
         alphaLocation = GLES20.glGetUniformLocation(program, "uAlpha")
         positionLocation = GLES20.glGetAttribLocation(program, "aPosition")
         normalLocation = GLES20.glGetAttribLocation(program, "aNormal")
@@ -942,17 +977,17 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         if (elapsed < STATS_WINDOW_NANOS) return
 
         val fps = ((framesInStatsWindow.toDouble() * 1_000_000_000.0) / elapsed.toDouble()).toInt()
-        val showCutaway = rockVisible && clipEnabled && cameraMode == CameraMode.ORBIT
+        val showCutaway = rockVisible && slices.enabledAxes.isNotEmpty() && cameraMode == CameraMode.ORBIT
         val worldVertices = if (rockVisible) {
             (worldShellMesh?.vertexCount ?: 0) +
                 (grassMesh?.vertexCount ?: 0) +
                 chunkMeshes.values.sumOf { it.mesh?.vertexCount ?: 0 } +
-                (if (showCutaway) sliceMesh?.vertexCount ?: 0 else 0)
+                (if (showCutaway) sliceMeshes.values.sumOf { it?.vertexCount ?: 0 } else 0)
         } else {
             (tunnelOverviewMesh?.vertexCount ?: 0) + (grassMesh?.vertexCount ?: 0)
         }
         val oreVertices = (oreOverlayMesh?.vertexCount ?: 0) +
-            (if (showCutaway) oreSliceMesh?.vertexCount ?: 0 else 0)
+            (if (showCutaway) oreSliceMeshes.values.sumOf { it?.vertexCount ?: 0 } else 0)
         val machineCopies = if (cameraMode == CameraMode.ORBIT) 2 else 0
         val totalVertices = worldVertices + oreVertices + ((machineMesh?.vertexCount ?: 0) * machineCopies)
         performanceListener?.invoke(
@@ -1047,25 +1082,36 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
         const val FRAGMENT_SHADER = """
             precision mediump float;
-            uniform int uClipAxis;
-            uniform float uClipValue;
-            uniform float uClipDirection;
-            uniform float uClipEnabled;
+            uniform vec3 uClipValues;
+            uniform vec3 uClipDirections;
+            uniform vec3 uClipEnabled;
+            uniform vec3 uBoundsMin;
+            uniform vec3 uBoundsMax;
+            uniform float uBoundsClipEnabled;
             uniform float uAlpha;
             varying vec3 vDomainPosition;
             varying vec3 vNormal;
             varying vec3 vColor;
 
             void main() {
-                float coordinate = vDomainPosition.z;
-                if (uClipAxis == 0) {
-                    coordinate = vDomainPosition.x;
-                } else if (uClipAxis == 1) {
-                    coordinate = vDomainPosition.y;
+                if (uClipEnabled.x > 0.5 && ((vDomainPosition.x - uClipValues.x) * uClipDirections.x) < 0.0) {
+                    discard;
+                }
+                if (uClipEnabled.y > 0.5 && ((vDomainPosition.y - uClipValues.y) * uClipDirections.y) < 0.0) {
+                    discard;
+                }
+                if (uClipEnabled.z > 0.5 && ((vDomainPosition.z - uClipValues.z) * uClipDirections.z) < 0.0) {
+                    discard;
                 }
 
-                if (uClipEnabled > 0.5 && ((coordinate - uClipValue) * uClipDirection) < 0.0) {
-                    discard;
+                if (uBoundsClipEnabled > 0.5) {
+                    if (
+                        vDomainPosition.x < uBoundsMin.x || vDomainPosition.x > uBoundsMax.x ||
+                        vDomainPosition.y < uBoundsMin.y || vDomainPosition.y > uBoundsMax.y ||
+                        vDomainPosition.z < uBoundsMin.z || vDomainPosition.z > uBoundsMax.z
+                    ) {
+                        discard;
+                    }
                 }
 
                 vec3 lightDirection = normalize(vec3(0.35, 0.78, 0.52));
