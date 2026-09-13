@@ -19,7 +19,7 @@ jobs:
           ref: feature/live-ore-diagnostics
           fetch-depth: 0
       - name: Apply refinement
-        run: python3 .github/scripts/apply_live_ore_diagnostics.py
+        run: python3 .github/scripts/run_live_ore_diagnostics_patch.py
       - name: Commit refinement
         run: |
           git config user.name "kevvy555"
