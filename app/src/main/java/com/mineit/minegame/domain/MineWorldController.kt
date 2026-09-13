@@ -151,12 +151,12 @@ object MineWorldController {
             .filterNot { it.id in state.discoveredOreBodyIds }
             .filter { body ->
                 body.id in minedBodyIds ||
-                    MineWorldGeometry.exposedOreSegmentsForSegment(
+                    MineWorldGeometry.oreBodyExposedBySegment(
                         start = start,
                         end = target,
                         tunnelRadiusMetres = state.tunnel.radiusMetres,
-                        oreBody = body.nodes,
-                    ).isNotEmpty()
+                        oreBody = body,
+                    )
             }
             .map { it.id }
             .toSet()
@@ -168,7 +168,6 @@ object MineWorldController {
             val type = bodyTypesById[bodyId] ?: return@forEach
             minedOreByType[type] = (minedOreByType[type] ?: 0f) + volume
         }
-
 
         val tunnel = state.tunnel.copy(points = state.tunnel.points + target)
         val extent = expandExtent(state.extent, target)
