@@ -3,8 +3,8 @@ package com.mineit.minegame.ui.render
 import com.mineit.minegame.domain.MinePoint3D
 import com.mineit.minegame.domain.MineWorldBounds
 import com.mineit.minegame.domain.OreBody
-import com.mineit.minegame.domain.OreBodyNode
 import com.mineit.minegame.domain.OreType
+import com.mineit.minegame.domain.TabularVeinGeometry
 import com.mineit.minegame.domain.TunnelSegment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,9 +25,11 @@ class OreChunkPlannerTest {
         val body = OreBody(
             id = "long-copper",
             type = OreType.COPPER,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(-36f, 0f, 36f), 7f),
-                OreBodyNode(MinePoint3D(36f, 0f, 36f), 7f),
+            geometry = horizontalVein(
+                centre = MinePoint3D(0f, 0f, 36f),
+                strikeDegrees = 0f,
+                lengthMetres = 72f,
+                widthMetres = 10f,
             ),
         )
         val cut = TunnelSegment(
@@ -51,15 +53,16 @@ class OreChunkPlannerTest {
     }
 
     @Test
-    fun bentDepositDoesNotQueueEmptyCornersOfItsWholeBodyBox() {
+    fun diagonalVeinDoesNotQueueEmptyCornersOfItsWholeBodyBox() {
         val world = MineWorldBounds(-60f, 60f, -60f, 60f, 0f, 72f)
         val body = OreBody(
-            id = "dogleg",
+            id = "diagonal",
             type = OreType.GOLD,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 12f), 2f),
-                OreBodyNode(MinePoint3D(0f, 36f, 36f), 2f),
-                OreBodyNode(MinePoint3D(36f, 36f, 36f), 2f),
+            geometry = horizontalVein(
+                centre = MinePoint3D(0f, 0f, 36f),
+                strikeDegrees = 45f,
+                lengthMetres = 72f,
+                widthMetres = 6f,
             ),
         )
 
@@ -67,26 +70,27 @@ class OreChunkPlannerTest {
 
         assertTrue(chunks.isNotEmpty())
         assertFalse(
-            "whole-body AABB would queue this corner even though neither local segment reaches it",
-            OreChunkKey(body.id, x = 2, y = 0, z = 2) in chunks,
+            "whole-body AABB would queue this corner even though the local vein does not reach it",
+            OreChunkKey(body.id, x = 2, y = -2, z = 3) in chunks,
         )
     }
 
     @Test
-    fun cutterNearWholeBodyBoxButAwayFromLocalDepositSegmentsQueuesNothing() {
+    fun cutterNearWholeBodyBoxButAwayFromLocalPlanningBoundsQueuesNothing() {
         val world = MineWorldBounds(-60f, 60f, -60f, 60f, 0f, 72f)
         val body = OreBody(
-            id = "dogleg",
+            id = "diagonal",
             type = OreType.SILVER,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 12f), 2f),
-                OreBodyNode(MinePoint3D(0f, 36f, 36f), 2f),
-                OreBodyNode(MinePoint3D(36f, 36f, 36f), 2f),
+            geometry = horizontalVein(
+                centre = MinePoint3D(0f, 0f, 36f),
+                strikeDegrees = 45f,
+                lengthMetres = 72f,
+                widthMetres = 6f,
             ),
         )
         val cut = TunnelSegment(
-            start = MinePoint3D(30f, 0f, 30f),
-            end = MinePoint3D(30f, 0f, 34f),
+            start = MinePoint3D(30f, -20f, 34f),
+            end = MinePoint3D(30f, -20f, 38f),
         )
 
         val affected = OreChunkPlanner.affectedChunks(
@@ -105,4 +109,22 @@ class OreChunkPlannerTest {
         val cellsPerChunk = OreChunkPlanner.CHUNK_SIZE_METRES / OreMeshBuilder.BODY_GRID_STEP_METRES
         assertEquals(20f, cellsPerChunk, 0.0001f)
     }
+
+    private fun horizontalVein(
+        centre: MinePoint3D,
+        strikeDegrees: Float,
+        lengthMetres: Float,
+        widthMetres: Float,
+    ) = TabularVeinGeometry(
+        centre = centre,
+        strikeDegrees = strikeDegrees,
+        dipDegrees = 0f,
+        lengthMetres = lengthMetres,
+        widthMetres = widthMetres,
+        thicknessMetres = 4f,
+        pinchAmplitude = 0f,
+        waveAmplitudeMetres = 0f,
+        waveCycles = 1f,
+        phaseRadians = 0f,
+    )
 }
