@@ -1,6 +1,5 @@
 package com.mineit.minegame.domain
 
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -91,13 +90,13 @@ object OreGeologyGenerator {
                 verticalDegrees + random.nextFloat(-profile.verticalJitterDegrees, profile.verticalJitterDegrees)
                 ).coerceIn(-38f, 68f)
             val step = random.nextFloat(profile.minStepMetres, profile.maxStepMetres)
-            val heading = headingDegrees * (PI.toFloat() / 180f)
-            val vertical = verticalDegrees * (PI.toFloat() / 180f)
-            val horizontal = cos(vertical) * step
+            val heading = Math.toRadians(headingDegrees.toDouble())
+            val vertical = Math.toRadians(verticalDegrees.toDouble())
+            val horizontal = cos(vertical).toFloat() * step
             var next = MinePoint3D(
-                x = point.x + (cos(heading) * horizontal),
-                y = point.y + (sin(heading) * horizontal),
-                z = point.z + (sin(vertical) * step),
+                x = point.x + (cos(heading).toFloat() * horizontal),
+                y = point.y + (sin(heading).toFloat() * horizontal),
+                z = point.z + (sin(vertical).toFloat() * step),
             )
 
             if (next.z < MIN_ORE_DEPTH_METRES) {
