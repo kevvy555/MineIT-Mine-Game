@@ -1,7 +1,7 @@
 # Deposit Geometry Redesign
 
-Status: Stage 1 complete; Stage 2 next
-Branch: `feature/deposit-geometry-redesign`
+Status: Stage 1 complete; Stage 2 implementation in progress
+Branch: `feature/deposit-geometry-stage2`
 
 ## Why this exists
 
@@ -50,7 +50,67 @@ Deposit definitions should expose a common scalar/material query rather than req
 
 The initial Gold/Silver/Copper mapping can be gameplay-oriented rather than claiming every real-world occurrence follows one form.
 
-Exit criteria: a seed can generate visibly distinct vein, lens, layered and disseminated bodies, all of which can be cut by the same Stage 1 excavation system.
+### Stage 2 implementation contract
+
+The shape abstraction is part of the domain model, not the renderer:
+
+- Each immutable `OreBody` owns one deposit geometry implementation.
+- Every deposit geometry exposes the same three pieces of information:
+  - a signed material field `margin(point)` where positive means ore, zero is the original ore surface and negative means outside the body;
+  - one conservative whole-body AABB for mining broad-phase culling;
+  - one or more conservative local planning AABBs so the renderer can keep 12m ore-chunk scheduling local without knowing the archetype.
+- Mining classification, discovery, CT sampling, ROCK OFF rendering and remaining-ore meshing must call the common field. They must not switch on the archetype.
+- The archetype-specific code is limited to immutable geometry definitions and seeded generation.
+- Remaining ore stays `min(originalDepositMargin, excavationMargin)`, so every Stage 2 body automatically inherits Stage 1 subtraction.
+
+Initial seeded mapping for the six POC bodies:
+
+- `gold-1`: tabular vein/lode and intentionally positioned to remain easy to encounter from the default starter heading.
+- `gold-2`: tabular vein/lode.
+- `silver-1`: tabular vein/lode.
+- `silver-2`: lens/massive body.
+- `copper-1`: disseminated/stockwork volume.
+- `copper-2`: layered/stratiform body.
+
+This mapping is deliberately gameplay-first. Later host geology and grade can make commodity/deposit associations more geologically constrained.
+
+Initial parameter envelopes:
+
+- **Gold vein**: roughly 50–85m strike length, 12–22m in-plane width, 1.8–3.6m total thickness, noticeable pinch/swell and sub-metre to ~1m waviness.
+- **Silver vein**: roughly 55–95m strike length, 18–30m in-plane width, 2.8–5.2m total thickness, gentler pinch/swell than Gold.
+- **Silver lens**: roughly 28–48m long, 18–32m wide and 8–16m thick, with bounded low-frequency surface irregularity.
+- **Copper disseminated zone**: roughly 45–75m long, 35–60m wide and 20–36m thick, with low-frequency three-dimensional boundary irregularity.
+- **Copper layered body**: roughly 75–130m long, 55–100m wide and 6–12m thick, with broad low-amplitude undulation rather than vein-style pinch/swell.
+
+Generation rules:
+
+- The same seed must reproduce the same Stage 2 geology within a given implementation/version.
+- Stage 2 does not need to preserve the exact old tube geometry for the existing seed; the old representation is being replaced deliberately.
+- Bodies must remain below the surface with a conservative minimum ore depth.
+- Strike/dip and shape parameters are generated once. Per-sample material queries must avoid collection allocation and avoid generating random values.
+- Conservative bounds must never cull real ore. False-positive broad-phase overlap is acceptable; false negatives are not.
+- Local planning bounds may overlap and may be conservative, but should avoid turning a long vein/layer into one large enclosing-box mesh queue.
+- Disseminated/stockwork is a continuous mineralised volume in Stage 2. Sparse grade distribution belongs to Stage 4 rather than introducing holes that would falsely imply barren rock at this stage.
+
+Required regression coverage:
+
+- Same seed produces structurally equal geology.
+- The default seed contains all four archetypes and two bodies of each ore commodity.
+- Representative inside/outside samples prove each archetype's field and conservative bounds.
+- The default starter path still discovers `gold-1`.
+- Mining accounting still partitions every newly removed sample exactly once.
+- A cutter pass through each archetype produces a true subtractive void while leaving adjacent ore intact.
+- Broad-phase mining culling still excludes distant bodies before per-sample field evaluation.
+- Ore chunk planning remains local for long veins/layers and does not queue the empty corners of one whole-body AABB.
+
+Performance acceptance for Stage 2:
+
+- A material-field query is constant-cost with no topology traversal proportional to deposit length.
+- Mining continues to broad-phase by conservative body bounds before evaluating the field.
+- Render planning uses generic local planning bounds rather than archetype knowledge.
+- Stage 2 must not reintroduce the large ore-mesh queues or main-thread material-classification work removed in 0.13.3.
+
+Exit criteria: the default seed generates visibly distinct vein, lens, layered and disseminated bodies; the same Stage 1 excavation system cuts all four; mining/render code is shape-agnostic; required domain/render regressions and full Android CI pass.
 
 ## Stage 3 — Lightweight host-rock geology
 
@@ -89,4 +149,4 @@ Exit criteria: a generated mine can contain host layers/intrusions and mineralis
 
 ## Deferred deliberately
 
-Not part of Stage 1: processing/refining, commodity pricing, detailed rock mechanics, faults/folding, explosives, support systems, ore dilution, recovery percentage, haulage, or a full grade/economy UI. These can use the new geometry later without blocking the physical mining model now.
+Not part of Stage 1 or Stage 2: processing/refining, commodity pricing, detailed rock mechanics, faults/folding, explosives, support systems, ore dilution, recovery percentage, haulage, sparse grade distribution, or a full grade/economy UI. These can use the new geometry later without blocking the physical mining model now.
