@@ -73,15 +73,14 @@ data class OreBodyNode(
 data class MineWorldState(
     val tunnel: TunnelGeometry = MineWorldContent.initialTunnel,
     val extent: ChunkExtent = MineWorldContent.initialExtent,
-    val oreBody: List<OreBodyNode> = MineWorldContent.oreBody,
+    val oreBodies: List<OreBody> = MineWorldContent.oreBodies,
+    val discoveredOreBodyIds: Set<String> = emptySet(),
     val headingDegrees: Float = 25f,
     val verticalAngleDegrees: Float = 55f,
     val steering: Float = 0f,
     val digSpeedMultiplier: Float = 1f,
     val isDigging: Boolean = false,
     val excavatedVolumeCubicMetres: Float = 0f,
-    val exposedOreSegments: Set<Int> = emptySet(),
-    val oreBodyDiscovered: Boolean = false,
 ) {
     val bounds: MineWorldBounds
         get() = extent.bounds(MineWorldController.CHUNK_SIZE_METRES)
@@ -91,6 +90,21 @@ data class MineWorldState(
 
     val wasteRockTonnes: Float
         get() = excavatedVolumeCubicMetres * MineWorldController.ROCK_DENSITY_TONNES_PER_CUBIC_METRE
+
+    val oreBodyDiscovered: Boolean
+        get() = discoveredOreBodyIds.isNotEmpty()
+
+    val discoveredOreBodies: List<OreBody>
+        get() = oreBodies.filter { it.id in discoveredOreBodyIds }
+
+    /**
+     * The original single-body POC renderer still asks for one body when colouring detailed
+     * tunnel walls. This derived view is not geology state: typed [oreBodies] remain canonical.
+     * Full typed bodies are rendered separately and this simply preserves wall colouring for the
+     * first discovered deposit until that small renderer path is removed.
+     */
+    val oreBody: List<OreBodyNode>
+        get() = discoveredOreBodies.firstOrNull()?.nodes.orEmpty()
 
     /**
      * While stopped, the steering slider previews the direction that will be committed when
@@ -108,6 +122,8 @@ data class MineWorldState(
 }
 
 object MineWorldContent {
+    const val ORE_SEED = 53_260_010
+
     val initialExtent = ChunkExtent(
         minChunkX = -1,
         maxChunkX = 0,
@@ -122,17 +138,7 @@ object MineWorldContent {
         radiusMetres = 3.2f,
     )
 
-    // One connected hard-rock vein. It is hidden until excavation first intersects it.
-    // After discovery, slices may reveal the connected body throughout generated geology.
-    val oreBody = listOf(
-        OreBodyNode(MinePoint3D(11f, 5f, 17f), 4.6f),
-        OreBodyNode(MinePoint3D(15f, 9f, 25f), 5.0f),
-        OreBodyNode(MinePoint3D(20f, 12f, 34f), 5.6f),
-        OreBodyNode(MinePoint3D(24f, 10f, 44f), 6.2f),
-        OreBodyNode(MinePoint3D(21f, 3f, 54f), 5.4f),
-        OreBodyNode(MinePoint3D(14f, -5f, 65f), 4.7f),
-        OreBodyNode(MinePoint3D(6f, -12f, 76f), 4.0f),
-    )
+    val oreBodies: List<OreBody> = OreGeologyGenerator.generate(ORE_SEED)
 }
 
 internal fun cylinderVolume(radiusMetres: Float, lengthMetres: Float): Float =
