@@ -8,6 +8,11 @@ internal enum class CameraMode {
     DIGGER_POV,
 }
 
+internal enum class OrbitGestureMode {
+    ROTATE,
+    PAN,
+}
+
 internal data class SliceFractions(
     val x: Float,
     val y: Float,
