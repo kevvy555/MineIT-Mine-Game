@@ -38,14 +38,7 @@ class MineWorldControllerTest {
 
     @Test
     fun excavationPartitionsOreAndWasteWithoutDoubleCountingMaterial() {
-        val ore = OreBody(
-            id = "test-gold",
-            type = OreType.GOLD,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 8f),
-                OreBodyNode(MinePoint3D(0f, 0f, 20f), 8f),
-            ),
-        )
+        val ore = sphericalTestBody("test-gold", OreType.GOLD, radius = 8f)
         var state = MineWorldState(
             oreBodies = listOf(ore),
             verticalAngleDegrees = 90f,
@@ -104,14 +97,7 @@ class MineWorldControllerTest {
 
     @Test
     fun excavationLeavesOriginalDepositImmutableAndCreatesTrueRemainingMaterialHole() {
-        val ore = OreBody(
-            id = "test-copper",
-            type = OreType.COPPER,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
-                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
-            ),
-        )
+        val ore = sphericalTestBody("test-copper", OreType.COPPER, radius = 6f)
         var state = MineWorldState(oreBodies = listOf(ore), verticalAngleDegrees = 90f)
         state = MineWorldController.startDigging(state)
         repeat(12) { state = MineWorldController.tick(state, 0.25f) }
@@ -120,21 +106,14 @@ class MineWorldControllerTest {
         val untouchedSide = MinePoint3D(5f, 0f, 6f)
         assertTrue(state.minedOreVolumeCubicMetres(OreType.COPPER) > 0f)
         assertEquals("original deposit definition must not be mutated", ore, state.oreBodies.single())
-        assertTrue(MineWorldGeometry.oreMargin(cutCentre, ore.nodes) > 0f)
+        assertTrue(MineWorldGeometry.oreMargin(cutCentre, ore) > 0f)
         assertTrue(MineWorldGeometry.remainingOreMargin(cutCentre, ore, state.tunnel) < 0f)
         assertTrue(MineWorldGeometry.remainingOreMargin(untouchedSide, ore, state.tunnel) > 0f)
     }
 
     @Test
     fun remainingOreFieldUsesTheActualTunnelRadiusInsteadOfEquivalentRadiusShrink() {
-        val ore = OreBody(
-            id = "test-gold",
-            type = OreType.GOLD,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 7f),
-                OreBodyNode(MinePoint3D(0f, 0f, 14f), 7f),
-            ),
-        )
+        val ore = sphericalTestBody("test-gold", OreType.GOLD, radius = 7f)
         val tunnel = TunnelGeometry(
             points = listOf(MinePoint3D(0f, 0f, 1f), MinePoint3D(0f, 0f, 15f)),
             radiusMetres = 3.2f,
@@ -325,10 +304,10 @@ class MineWorldControllerTest {
             state = MineWorldController.tick(state, 0.25f)
         }
 
-        val fullScan = MineWorldContent.oreBodies
-            .filter { MineWorldGeometry.exposedOreSegments(state.tunnel, it.nodes).isNotEmpty() }
-            .map { it.id }
-            .toSet()
+        val fullScan = MineWorldGeometry.exposedOreBodyIds(
+            tunnel = state.tunnel,
+            oreBodies = MineWorldContent.oreBodies,
+        )
         assertEquals(fullScan, state.discoveredOreBodyIds)
     }
 
@@ -357,7 +336,25 @@ class MineWorldControllerTest {
         val measured = requireNotNull(diagnostics)
         assertTrue(measured.totalMs >= measured.materialMs)
         assertTrue(measured.classification.candidateSamples > 0)
-        assertEquals(next.excavatedVolumeCubicMetres, next.wasteRockVolumeCubicMetres + next.totalMinedOreVolumeCubicMetres, 0.05f)
+        assertEquals(
+            next.excavatedVolumeCubicMetres,
+            next.wasteRockVolumeCubicMetres + next.totalMinedOreVolumeCubicMetres,
+            0.05f,
+        )
     }
 
+    private fun sphericalTestBody(id: String, type: OreType, radius: Float): OreBody = OreBody(
+        id = id,
+        type = type,
+        geometry = DisseminatedStockworkGeometry(
+            centre = MinePoint3D(0f, 0f, 8f),
+            strikeDegrees = 0f,
+            dipDegrees = 0f,
+            halfLengthMetres = radius,
+            halfWidthMetres = radius,
+            halfHeightMetres = radius,
+            irregularityMetres = 0f,
+            phaseRadians = 0f,
+        ),
+    )
 }
