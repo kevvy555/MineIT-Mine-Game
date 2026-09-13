@@ -1,0 +1,166 @@
+name: Apply Hide Tunnel Patch
+
+on:
+  push:
+    branches:
+      - feature/0.12.1-hide-tunnel
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[hide-tunnel-patched]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/0.12.1-hide-tunnel
+          fetch-depth: 0
+
+      - name: Apply focused source patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one occurrence, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          screen = "app/src/main/java/com/mineit/minegame/ui/MineWorldScreen.kt"
+          replace_once(screen,
+              "    var rockVisible by remember { mutableStateOf(true) }\n    var followDigger by remember { mutableStateOf(false) }",
+              "    var rockVisible by remember { mutableStateOf(true) }\n    var tunnelVisible by remember { mutableStateOf(true) }\n    var followDigger by remember { mutableStateOf(false) }",
+          )
+          replace_once(screen,
+              "                        view.setRockVisible(rockVisible)\n                        view.setFollowDigger(followDigger)",
+              "                        view.setRockVisible(rockVisible)\n                        view.setTunnelVisible(tunnelVisible)\n                        view.setFollowDigger(followDigger)",
+          )
+          replace_once(screen,
+              "                    view.setRockVisible(rockVisible)\n                    view.setFollowDigger(followDigger)",
+              "                    view.setRockVisible(rockVisible)\n                    view.setTunnelVisible(tunnelVisible)\n                    view.setFollowDigger(followDigger)",
+          )
+          replace_once(screen,
+              "            rockVisible = rockVisible,\n            followDigger = followDigger,",
+              "            rockVisible = rockVisible,\n            tunnelVisible = tunnelVisible,\n            followDigger = followDigger,",
+          )
+          replace_once(screen,
+              "            onToggleRock = { rockVisible = !rockVisible },\n            onToggleFollow = { followDigger = !followDigger },",
+              "            onToggleRock = { rockVisible = !rockVisible },\n            onToggleTunnel = { tunnelVisible = !tunnelVisible },\n            onToggleFollow = { followDigger = !followDigger },",
+          )
+          replace_once(screen,
+              "    rockVisible: Boolean,\n    followDigger: Boolean,",
+              "    rockVisible: Boolean,\n    tunnelVisible: Boolean,\n    followDigger: Boolean,",
+          )
+          replace_once(screen,
+              "    onToggleRock: () -> Unit,\n    onToggleFollow: () -> Unit,",
+              "    onToggleRock: () -> Unit,\n    onToggleTunnel: () -> Unit,\n    onToggleFollow: () -> Unit,",
+          )
+          replace_once(screen,
+              "                rockVisible = rockVisible,\n                followDigger = followDigger,",
+              "                rockVisible = rockVisible,\n                tunnelVisible = tunnelVisible,\n                followDigger = followDigger,",
+          )
+          replace_once(screen,
+              "                onToggleRock = onToggleRock,\n                onToggleFollow = onToggleFollow,",
+              "                onToggleRock = onToggleRock,\n                onToggleTunnel = onToggleTunnel,\n                onToggleFollow = onToggleFollow,",
+          )
+          replace_once(screen,
+              "    rockVisible: Boolean,\n    followDigger: Boolean,\n    cameraMode: CameraMode,",
+              "    rockVisible: Boolean,\n    tunnelVisible: Boolean,\n    followDigger: Boolean,\n    cameraMode: CameraMode,",
+          )
+          replace_once(screen,
+              "    onToggleRock: () -> Unit,\n    onToggleFollow: () -> Unit,\n    onCameraModeChange: (CameraMode) -> Unit,",
+              "    onToggleRock: () -> Unit,\n    onToggleTunnel: () -> Unit,\n    onToggleFollow: () -> Unit,\n    onCameraModeChange: (CameraMode) -> Unit,",
+          )
+          replace_once(screen,
+              "    Row(\n        modifier = Modifier.fillMaxWidth(),\n        horizontalArrangement = Arrangement.spacedBy(7.dp),\n    ) {\n        ToggleButton(\n            selected = orbitGestureMode == OrbitGestureMode.PAN,",
+              "    Row(\n        modifier = Modifier.fillMaxWidth(),\n        horizontalArrangement = Arrangement.spacedBy(7.dp),\n    ) {\n        ToggleButton(\n            selected = tunnelVisible,\n            selectedText = \"TUNNEL ON\",\n            unselectedText = \"TUNNEL OFF\",\n            onClick = onToggleTunnel,\n            modifier = Modifier.weight(1f),\n        )\n        ToggleButton(\n            selected = orbitGestureMode == OrbitGestureMode.PAN,",
+          )
+          replace_once(screen,
+              "        Text(\n            text = \"TUNNELS ONLY • grass remains visible as the surface reference\",",
+              "        Text(\n            text = if (tunnelVisible) {\n                \"TUNNEL VISIBLE • grass remains visible as the surface reference\"\n            } else {\n                \"TUNNEL HIDDEN • inspect the depleted discovered ore without the tunnel skin\"\n            },",
+          )
+          replace_once(screen,
+              "        text = when {\n            seeOre ->",
+              "        text = when {\n            !rockVisible && !tunnelVisible -> \"Tunnel hidden • excavation still exists and material accounting is unchanged; only its overview skin is suppressed.\"\n            seeOre ->",
+          )
+
+          surface = "app/src/main/java/com/mineit/minegame/ui/render/MineSurfaceView.kt"
+          replace_once(surface,
+              "    fun setRockVisible(visible: Boolean) {\n        mineRenderer.setRockVisible(visible)\n    }\n\n    fun setSeeOre(enabled: Boolean)",
+              "    fun setRockVisible(visible: Boolean) {\n        mineRenderer.setRockVisible(visible)\n    }\n\n    fun setTunnelVisible(visible: Boolean) {\n        mineRenderer.setTunnelVisible(visible)\n    }\n\n    fun setSeeOre(enabled: Boolean)",
+          )
+
+          renderer = "app/src/main/java/com/mineit/minegame/ui/render/MineWorldGlRenderer.kt"
+          replace_once(renderer,
+              "    @Volatile\n    private var rockVisible = true\n\n    @Volatile\n    private var seeOre = false",
+              "    @Volatile\n    private var rockVisible = true\n\n    @Volatile\n    private var tunnelVisible = true\n\n    @Volatile\n    private var seeOre = false",
+          )
+          replace_once(renderer,
+              "    fun setSeeOre(enabled: Boolean) {",
+              "    fun setTunnelVisible(visible: Boolean) {\n        tunnelVisible = visible\n    }\n\n    fun setSeeOre(enabled: Boolean) {",
+          )
+          replace_once(renderer,
+              "        } else {\n            applyClipUniforms(state, enabled = false)\n            drawMesh(grassMesh)\n            drawMesh(tunnelOverviewMesh)\n        }",
+              "        } else {\n            applyClipUniforms(state, enabled = false)\n            drawMesh(grassMesh)\n            if (TunnelRenderPlanner.shouldRenderOverview(rockVisible, tunnelVisible)) {\n                drawMesh(tunnelOverviewMesh)\n            }\n        }",
+          )
+          replace_once(renderer,
+              "        if (!rockVisible && tunnelOverviewDirty) {",
+              "        if (!rockVisible && tunnelVisible && tunnelOverviewDirty) {",
+          )
+          replace_once(renderer,
+              "        } else {\n            (tunnelOverviewMesh?.vertexCount ?: 0) + (grassMesh?.vertexCount ?: 0)\n        }",
+              "        } else {\n            (if (TunnelRenderPlanner.shouldRenderOverview(rockVisible, tunnelVisible)) {\n                tunnelOverviewMesh?.vertexCount ?: 0\n            } else {\n                0\n            }) + (grassMesh?.vertexCount ?: 0)\n        }",
+          )
+
+          planning = "app/src/main/java/com/mineit/minegame/ui/render/ViewPlanning.kt"
+          text = Path(planning).read_text()
+          marker = "internal object FollowSlicePlanner {"
+          if marker not in text:
+              raise SystemExit("ViewPlanning marker missing")
+          text = text.replace(marker,
+              "internal object TunnelRenderPlanner {\n    fun shouldRenderOverview(rockVisible: Boolean, tunnelVisible: Boolean): Boolean =\n        !rockVisible && tunnelVisible\n}\n\n" + marker,
+              1,
+          )
+          Path(planning).write_text(text)
+
+          test = "app/src/test/java/com/mineit/minegame/ui/render/ViewPlanningTest.kt"
+          text = Path(test).read_text()
+          marker = "    @Test\n    fun sliceConfigurationKeepsIndependentAxisPositionsWhenSwitchingCuts()"
+          if marker not in text:
+              raise SystemExit("ViewPlanningTest marker missing")
+          text = text.replace(marker,
+              "    @Test\n    fun tunnelOverviewOnlyRendersWhenRockIsOffAndTunnelIsEnabled() {\n        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = true, tunnelVisible = true))\n        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = true, tunnelVisible = false))\n        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = false, tunnelVisible = false))\n        assertTrue(TunnelRenderPlanner.shouldRenderOverview(rockVisible = false, tunnelVisible = true))\n    }\n\n" + marker,
+              1,
+          )
+          Path(test).write_text(text)
+
+          gradle = "app/build.gradle.kts"
+          replace_once(gradle, '        versionCode = 16\n        versionName = "0.12.0"', '        versionCode = 17\n        versionName = "0.12.1"')
+
+          readme = "README.md"
+          replace_once(readme, "## Current prototype — 0.8.0", "## Current prototype — 0.12.1")
+          replace_once(readme,
+              "- **ROCK OFF** shows the excavated tunnel network while retaining grass as the surface reference.",
+              "- **ROCK OFF** shows the excavation/ore inspection view while retaining grass as the surface reference.\n- **TUNNEL ON/OFF** controls only the direct tunnel overview skin in ROCK OFF, allowing depleted ore to be inspected without changing excavation state or accounting.",
+          )
+          PY
+
+      - name: Commit focused patch
+        shell: bash
+        run: |
+          git config user.name "kevvy555"
+          git config user.email "kevvy555@googlemail.com"
+          git add app/src/main/java/com/mineit/minegame/ui/MineWorldScreen.kt \
+                  app/src/main/java/com/mineit/minegame/ui/render/MineSurfaceView.kt \
+                  app/src/main/java/com/mineit/minegame/ui/render/MineWorldGlRenderer.kt \
+                  app/src/main/java/com/mineit/minegame/ui/render/ViewPlanning.kt \
+                  app/src/test/java/com/mineit/minegame/ui/render/ViewPlanningTest.kt \
+                  app/build.gradle.kts README.md
+          git commit -m "feat: add tunnel visibility inspection [hide-tunnel-patched]"
+          git push origin HEAD:feature/0.12.1-hide-tunnel
