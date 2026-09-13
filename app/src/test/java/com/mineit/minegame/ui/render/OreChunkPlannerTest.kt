@@ -51,14 +51,14 @@ class OreChunkPlannerTest {
     }
 
     @Test
-    fun curvedDepositDoesNotQueueEmptyCornersOfItsEnclosingBox() {
+    fun bentDepositDoesNotQueueEmptyCornersOfItsWholeBodyBox() {
         val world = MineWorldBounds(-60f, 60f, -60f, 60f, 0f, 72f)
         val body = OreBody(
             id = "dogleg",
             type = OreType.GOLD,
             nodes = listOf(
                 OreBodyNode(MinePoint3D(0f, 0f, 12f), 2f),
-                OreBodyNode(MinePoint3D(0f, 0f, 36f), 2f),
+                OreBodyNode(MinePoint3D(0f, 36f, 36f), 2f),
                 OreBodyNode(MinePoint3D(36f, 36f, 36f), 2f),
             ),
         )
@@ -67,20 +67,20 @@ class OreChunkPlannerTest {
 
         assertTrue(chunks.isNotEmpty())
         assertFalse(
-            "the old whole-body AABB queued this empty corner even though no ore segment crosses it",
+            "whole-body AABB would queue this corner even though neither local segment reaches it",
             OreChunkKey(body.id, x = 2, y = 0, z = 2) in chunks,
         )
     }
 
     @Test
-    fun cutterNearBodyBoxButAwayFromActualDepositSegmentsQueuesNothing() {
+    fun cutterNearWholeBodyBoxButAwayFromLocalDepositSegmentsQueuesNothing() {
         val world = MineWorldBounds(-60f, 60f, -60f, 60f, 0f, 72f)
         val body = OreBody(
             id = "dogleg",
             type = OreType.SILVER,
             nodes = listOf(
                 OreBodyNode(MinePoint3D(0f, 0f, 12f), 2f),
-                OreBodyNode(MinePoint3D(0f, 0f, 36f), 2f),
+                OreBodyNode(MinePoint3D(0f, 36f, 36f), 2f),
                 OreBodyNode(MinePoint3D(36f, 36f, 36f), 2f),
             ),
         )
