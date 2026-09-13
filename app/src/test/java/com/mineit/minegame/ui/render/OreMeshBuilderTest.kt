@@ -1,9 +1,9 @@
 package com.mineit.minegame.ui.render
 
+import com.mineit.minegame.domain.DisseminatedStockworkGeometry
 import com.mineit.minegame.domain.MinePoint3D
 import com.mineit.minegame.domain.MineWorldState
 import com.mineit.minegame.domain.OreBody
-import com.mineit.minegame.domain.OreBodyNode
 import com.mineit.minegame.domain.OreType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -16,7 +16,7 @@ class OreMeshBuilderTest {
     fun seeOreBuildsOnlySolidCrossSectionsOnRequestedCtPlane() {
         val state = MineWorldState()
         val gold = state.oreBodies.first { it.type == OreType.GOLD }
-        val targetZ = gold.nodes.first().centre.z
+        val targetZ = gold.geometry.bounds.centre.z
         val fraction = ((targetZ - state.bounds.minZ) / state.bounds.depth).coerceIn(0f, 1f)
         val clip = MineMeshBuilder.clipValue(state, ClipAxis.Z, fraction)
 
@@ -41,7 +41,7 @@ class OreMeshBuilderTest {
     fun normalCtDoesNotRevealUndiscoveredOre() {
         val state = MineWorldState()
         val gold = state.oreBodies.first { it.type == OreType.GOLD }
-        val targetZ = gold.nodes.first().centre.z
+        val targetZ = gold.geometry.bounds.centre.z
         val fraction = ((targetZ - state.bounds.minZ) / state.bounds.depth).coerceIn(0f, 1f)
 
         val hidden = OreMeshBuilder.buildSlice(
@@ -60,7 +60,7 @@ class OreMeshBuilderTest {
         val initial = MineWorldState()
         val gold = initial.oreBodies.first { it.type == OreType.GOLD }
         val state = initial.copy(discoveredOreBodyIds = setOf(gold.id))
-        val targetZ = gold.nodes.first().centre.z
+        val targetZ = gold.geometry.bounds.centre.z
         val fraction = ((targetZ - state.bounds.minZ) / state.bounds.depth).coerceIn(0f, 1f)
 
         val mesh = OreMeshBuilder.buildSlice(
@@ -88,15 +88,15 @@ class OreMeshBuilderTest {
         val body = OreBody(
             id = "boundary-copper",
             type = OreType.COPPER,
-            nodes = listOf(
-                OreBodyNode(
-                    centre = MinePoint3D(-4f, bounds.maxY - 1f, 20f),
-                    radiusMetres = 8f,
-                ),
-                OreBodyNode(
-                    centre = MinePoint3D(4f, bounds.maxY - 1f, 20f),
-                    radiusMetres = 8f,
-                ),
+            geometry = DisseminatedStockworkGeometry(
+                centre = MinePoint3D(0f, bounds.maxY - 1f, 20f),
+                strikeDegrees = 0f,
+                dipDegrees = 0f,
+                halfLengthMetres = 8f,
+                halfWidthMetres = 8f,
+                halfHeightMetres = 8f,
+                irregularityMetres = 0f,
+                phaseRadians = 0f,
             ),
         )
         val state = initial.copy(oreBodies = listOf(body))
@@ -121,14 +121,21 @@ class OreMeshBuilderTest {
             assertTrue(z >= bounds.minZ - 0.001f && z <= bounds.maxZ + 0.001f)
         }
     }
+
     @Test
     fun discoveredOreMeshContainsARealCutterSizedVoid() {
         val body = OreBody(
             id = "cut-copper",
             type = OreType.COPPER,
-            nodes = listOf(
-                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
-                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
+            geometry = DisseminatedStockworkGeometry(
+                centre = MinePoint3D(0f, 0f, 8f),
+                strikeDegrees = 0f,
+                dipDegrees = 0f,
+                halfLengthMetres = 6f,
+                halfWidthMetres = 6f,
+                halfHeightMetres = 6f,
+                irregularityMetres = 0f,
+                phaseRadians = 0f,
             ),
         )
         val tunnel = com.mineit.minegame.domain.TunnelGeometry(
@@ -156,5 +163,4 @@ class OreMeshBuilderTest {
         }
         assertTrue("remaining ore should expose an inner cutter wall", hasInnerCutterWall)
     }
-
 }
