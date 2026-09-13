@@ -1,0 +1,1088 @@
+name: Apply Mining Performance Pass
+
+on:
+  push:
+    branches:
+      - feature/mining-performance-pass
+    paths:
+      - .github/workflows/apply-mining-performance-pass.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/mining-performance-pass
+      - name: Apply source changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one match in {path}, found {text.count(old)}")
+              p.write_text(text.replace(old, new, 1))
+
+          # --- Domain geometry: same truth, substantially cheaper exact checks. ---
+          path = "app/src/main/java/com/mineit/minegame/domain/MineWorldGeometry.kt"
+          replace_once(path,
+          '''data class ExcavationClassificationDiagnostics(
+              val elapsedMs: Float,
+              val candidateSamples: Int,
+              val newMaterialSamples: Int,
+              val nearbyExistingSegments: Int,
+              val existingTunnelChecks: Int,
+              val oreFieldEvaluations: Int,
+          )
+          ''',
+          '''data class ExcavationClassificationDiagnostics(
+              val elapsedMs: Float = 0f,
+              val candidateSamples: Int = 0,
+              val newMaterialSamples: Int = 0,
+              val nearbyExistingSegments: Int = 0,
+              val nearbyOreBodies: Int = 0,
+              val existingTunnelChecks: Int = 0,
+              val oreFieldEvaluations: Int = 0,
+          )
+
+          private data class ExistingTunnelCandidate(
+              val segment: TunnelSegment,
+              val minX: Float,
+              val maxX: Float,
+              val minY: Float,
+              val maxY: Float,
+              val minZ: Float,
+              val maxZ: Float,
+          ) {
+              fun couldContain(point: MinePoint3D): Boolean =
+                  point.x >= minX && point.x <= maxX &&
+                      point.y >= minY && point.y <= maxY &&
+                      point.z >= minZ && point.z <= maxZ
+          }
+          ''')
+
+          old_ore_margin = '''    fun oreMargin(point: MinePoint3D, oreBody: List<OreBodyNode>): Float {
+              if (oreBody.size < 2) return Float.NEGATIVE_INFINITY
+              var best = Float.NEGATIVE_INFINITY
+              oreBody.zipWithNext().forEach { (start, end) ->
+                  val t = closestParameter(point, start.centre, end.centre)
+                  val closest = interpolate(start.centre, end.centre, t)
+                  val radius = start.radiusMetres + ((end.radiusMetres - start.radiusMetres) * t)
+                  best = max(best, radius - distance(point, closest))
+              }
+              return best
+          }
+          '''
+          new_ore_margin = '''    fun oreMargin(point: MinePoint3D, oreBody: List<OreBodyNode>): Float {
+              if (oreBody.size < 2) return Float.NEGATIVE_INFINITY
+              var best = Float.NEGATIVE_INFINITY
+              for (index in 0 until oreBody.lastIndex) {
+                  val start = oreBody[index]
+                  val end = oreBody[index + 1]
+                  val vx = end.centre.x - start.centre.x
+                  val vy = end.centre.y - start.centre.y
+                  val vz = end.centre.z - start.centre.z
+                  val lengthSquared = (vx * vx) + (vy * vy) + (vz * vz)
+                  val t = if (lengthSquared <= 0.0001f) {
+                      0f
+                  } else {
+                      (((point.x - start.centre.x) * vx +
+                          (point.y - start.centre.y) * vy +
+                          (point.z - start.centre.z) * vz) / lengthSquared).coerceIn(0f, 1f)
+                  }
+                  val closestX = start.centre.x + (vx * t)
+                  val closestY = start.centre.y + (vy * t)
+                  val closestZ = start.centre.z + (vz * t)
+                  val dx = point.x - closestX
+                  val dy = point.y - closestY
+                  val dz = point.z - closestZ
+                  val radius = start.radiusMetres + ((end.radiusMetres - start.radiusMetres) * t)
+                  best = max(best, radius - sqrt((dx * dx) + (dy * dy) + (dz * dz)))
+              }
+              return best
+          }
+
+          fun oreBodyBounds(body: OreBody): MineWorldBounds? {
+              if (body.nodes.isEmpty()) return null
+              var minX = Float.POSITIVE_INFINITY
+              var maxX = Float.NEGATIVE_INFINITY
+              var minY = Float.POSITIVE_INFINITY
+              var maxY = Float.NEGATIVE_INFINITY
+              var minZ = Float.POSITIVE_INFINITY
+              var maxZ = Float.NEGATIVE_INFINITY
+              body.nodes.forEach { node ->
+                  minX = min(minX, node.centre.x - node.radiusMetres)
+                  maxX = max(maxX, node.centre.x + node.radiusMetres)
+                  minY = min(minY, node.centre.y - node.radiusMetres)
+                  maxY = max(maxY, node.centre.y + node.radiusMetres)
+                  minZ = min(minZ, node.centre.z - node.radiusMetres)
+                  maxZ = max(maxZ, node.centre.z + node.radiusMetres)
+              }
+              return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
+          }
+
+          /** Conservative bounds rejection only; a false result guarantees the cutter cannot touch this body. */
+          fun segmentMayReachOreBody(
+              start: MinePoint3D,
+              end: MinePoint3D,
+              tunnelRadiusMetres: Float,
+              body: OreBody,
+          ): Boolean {
+              val bounds = oreBodyBounds(body) ?: return false
+              return max(start.x, end.x) + tunnelRadiusMetres >= bounds.minX &&
+                  min(start.x, end.x) - tunnelRadiusMetres <= bounds.maxX &&
+                  max(start.y, end.y) + tunnelRadiusMetres >= bounds.minY &&
+                  min(start.y, end.y) - tunnelRadiusMetres <= bounds.maxY &&
+                  max(start.z, end.z) + tunnelRadiusMetres >= bounds.minZ &&
+                  min(start.z, end.z) - tunnelRadiusMetres <= bounds.maxZ
+          }
+          '''
+          replace_once(path, old_ore_margin, new_ore_margin)
+
+          replace_once(path,
+          '''        val nearbyExistingSegments = existingTunnelSegments.filter { existing ->
+              segmentBoundsOverlap(
+                  firstStart = start,
+                  firstEnd = end,
+                  secondStart = existing.start,
+                  secondEnd = existing.end,
+                  padding = tunnelRadiusMetres * 2f,
+              )
+          }
+
+          val sampleVolume = cylinderVolume(tunnelRadiusMetres, length) /
+          ''',
+          '''        val nearbyExistingSegments = existingTunnelSegments.asSequence()
+              .filter { existing ->
+                  segmentBoundsOverlap(
+                      firstStart = start,
+                      firstEnd = end,
+                      secondStart = existing.start,
+                      secondEnd = existing.end,
+                      padding = tunnelRadiusMetres * 2f,
+                  )
+              }
+              .map { existing -> existingTunnelCandidate(existing, tunnelRadiusMetres) }
+              .toList()
+          val nearbyOreBodies = oreBodies.filter { body ->
+              segmentMayReachOreBody(start, end, tunnelRadiusMetres, body)
+          }
+
+          val sampleVolume = cylinderVolume(tunnelRadiusMetres, length) /
+          ''')
+
+          replace_once(path,
+          '''                var alreadyExcavated = false
+                  for (existing in nearbyExistingSegments) {
+                      existingTunnelChecks += 1
+                      if (isInsideFiniteCylinder(sample, existing, tunnelRadiusMetres)) {
+                          alreadyExcavated = true
+                          break
+                      }
+                  }
+          ''',
+          '''                var alreadyExcavated = false
+                  for (candidate in nearbyExistingSegments) {
+                      if (!candidate.couldContain(sample)) continue
+                      existingTunnelChecks += 1
+                      if (isInsideFiniteCylinder(sample, candidate.segment, tunnelRadiusMetres)) {
+                          alreadyExcavated = true
+                          break
+                      }
+                  }
+          ''')
+
+          replace_once(path,
+          '''                oreBodies.forEach { body ->
+                      oreFieldEvaluations += 1
+                      val margin = oreMargin(sample, body.nodes)
+          ''',
+          '''                nearbyOreBodies.forEach { body ->
+                      oreFieldEvaluations += 1
+                      val margin = oreMargin(sample, body.nodes)
+          ''')
+
+          replace_once(path,
+          '''                nearbyExistingSegments = nearbyExistingSegments.size,
+                      existingTunnelChecks = existingTunnelChecks,
+          ''',
+          '''                nearbyExistingSegments = nearbyExistingSegments.size,
+                      nearbyOreBodies = nearbyOreBodies.size,
+                      existingTunnelChecks = existingTunnelChecks,
+          ''')
+
+          replace_once(path,
+          '''    private fun isInsideFiniteCylinder(
+              point: MinePoint3D,
+              segment: TunnelSegment,
+              radiusMetres: Float,
+          ): Boolean {
+              val t = projectionParameter(point, segment.start, segment.end)
+              if (t < 0f || t > 1f) return false
+              val closest = interpolate(segment.start, segment.end, t)
+              return distance(point, closest) <= radiusMetres
+          }
+          ''',
+          '''    private fun isInsideFiniteCylinder(
+              point: MinePoint3D,
+              segment: TunnelSegment,
+              radiusMetres: Float,
+          ): Boolean {
+              val vx = segment.end.x - segment.start.x
+              val vy = segment.end.y - segment.start.y
+              val vz = segment.end.z - segment.start.z
+              val lengthSquared = (vx * vx) + (vy * vy) + (vz * vz)
+              if (lengthSquared <= 0.0001f) {
+                  val dx = point.x - segment.start.x
+                  val dy = point.y - segment.start.y
+                  val dz = point.z - segment.start.z
+                  return (dx * dx) + (dy * dy) + (dz * dz) <= radiusMetres * radiusMetres
+              }
+              val t = (((point.x - segment.start.x) * vx +
+                  (point.y - segment.start.y) * vy +
+                  (point.z - segment.start.z) * vz) / lengthSquared)
+              if (t < 0f || t > 1f) return false
+              val dx = point.x - (segment.start.x + (vx * t))
+              val dy = point.y - (segment.start.y + (vy * t))
+              val dz = point.z - (segment.start.z + (vz * t))
+              return (dx * dx) + (dy * dy) + (dz * dz) <= radiusMetres * radiusMetres
+          }
+
+          private fun existingTunnelCandidate(
+              segment: TunnelSegment,
+              radiusMetres: Float,
+          ): ExistingTunnelCandidate = ExistingTunnelCandidate(
+              segment = segment,
+              minX = min(segment.start.x, segment.end.x) - radiusMetres,
+              maxX = max(segment.start.x, segment.end.x) + radiusMetres,
+              minY = min(segment.start.y, segment.end.y) - radiusMetres,
+              maxY = max(segment.start.y, segment.end.y) + radiusMetres,
+              minZ = min(segment.start.z, segment.end.z) - radiusMetres,
+              maxZ = max(segment.start.z, segment.end.z) + radiusMetres,
+          )
+          ''')
+
+          # --- Controller: skip expensive discovery scans for bodies the cutter cannot reach. ---
+          path = "app/src/main/java/com/mineit/minegame/domain/MineWorldController.kt"
+          replace_once(path,
+          '''        var classificationDiagnostics = ExcavationClassificationDiagnostics(0f, 0, 0, 0, 0, 0)
+          ''',
+          '''        var classificationDiagnostics = ExcavationClassificationDiagnostics()
+          ''')
+          replace_once(path,
+          '''            .filter { body ->
+                  body.id in minedBodyIds ||
+                      MineWorldGeometry.exposedOreSegmentsForSegment(
+                          start = start,
+                          end = target,
+                          tunnelRadiusMetres = state.tunnel.radiusMetres,
+                          oreBody = body.nodes,
+                      ).isNotEmpty()
+              }
+          ''',
+          '''            .filter { body ->
+                  body.id in minedBodyIds ||
+                      (
+                          MineWorldGeometry.segmentMayReachOreBody(
+                              start = start,
+                              end = target,
+                              tunnelRadiusMetres = state.tunnel.radiusMetres,
+                              body = body,
+                          ) &&
+                              MineWorldGeometry.exposedOreSegmentsForSegment(
+                                  start = start,
+                                  end = target,
+                                  tunnelRadiusMetres = state.tunnel.radiusMetres,
+                                  oreBody = body.nodes,
+                              ).isNotEmpty()
+                          )
+              }
+          ''')
+
+          # --- ViewModel: fixed-deadline loop, heavy deterministic tick off the main thread. ---
+          Path("app/src/main/java/com/mineit/minegame/ui/MineWorldViewModel.kt").write_text('''package com.mineit.minegame.ui
+
+          import androidx.lifecycle.ViewModel
+          import androidx.lifecycle.viewModelScope
+          import com.mineit.minegame.domain.MineTickDiagnostics
+          import com.mineit.minegame.domain.MineWorldController
+          import com.mineit.minegame.domain.MineWorldState
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.Job
+          import kotlinx.coroutines.delay
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.StateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.isActive
+          import kotlinx.coroutines.launch
+          import kotlinx.coroutines.sync.Mutex
+          import kotlinx.coroutines.sync.withLock
+          import kotlinx.coroutines.withContext
+
+          data class SequencedTickDiagnostics(
+              val sequence: Long,
+              val diagnostics: MineTickDiagnostics,
+              val schedulerLateMs: Float,
+              val tickIntervalMs: Float,
+          )
+
+          class MineWorldViewModel : ViewModel() {
+              private val mutableState = MutableStateFlow(MineWorldState())
+              val state: StateFlow<MineWorldState> = mutableState.asStateFlow()
+              private val mutableTickDiagnostics = MutableStateFlow<SequencedTickDiagnostics?>(null)
+              val tickDiagnostics: StateFlow<SequencedTickDiagnostics?> = mutableTickDiagnostics.asStateFlow()
+
+              private val stateMutex = Mutex()
+              private var diggingJob: Job? = null
+              private var tickSequence = 0L
+
+              fun setSteering(value: Float) = updateDomainState { MineWorldController.setSteering(it, value) }
+
+              fun setVerticalAngle(degrees: Float) = updateDomainState {
+                  MineWorldController.setVerticalAngle(it, degrees)
+              }
+
+              fun setDigSpeedMultiplier(multiplier: Float) = updateDomainState {
+                  MineWorldController.setDigSpeedMultiplier(it, multiplier)
+              }
+
+              fun turnHeadingBy(degrees: Float) = updateDomainState {
+                  MineWorldController.turnHeadingBy(it, degrees)
+              }
+
+              fun toggleDigging() {
+                  viewModelScope.launch {
+                      stateMutex.withLock {
+                          val current = mutableState.value
+                          if (current.isDigging) {
+                              diggingJob?.cancel()
+                              diggingJob = null
+                              mutableState.value = MineWorldController.stopDigging(current)
+                          } else {
+                              val started = MineWorldController.startDigging(current)
+                              mutableState.value = started
+                              if (started.isDigging) startDiggingLoop()
+                          }
+                      }
+                  }
+              }
+
+              fun reset() {
+                  diggingJob?.cancel()
+                  diggingJob = null
+                  viewModelScope.launch {
+                      stateMutex.withLock {
+                          mutableState.value = MineWorldController.reset()
+                          mutableTickDiagnostics.value = null
+                          tickSequence = 0L
+                      }
+                  }
+              }
+
+              private fun updateDomainState(transform: (MineWorldState) -> MineWorldState) {
+                  viewModelScope.launch {
+                      stateMutex.withLock {
+                          mutableState.value = transform(mutableState.value)
+                      }
+                  }
+              }
+
+              private fun startDiggingLoop() {
+                  diggingJob?.cancel()
+                  diggingJob = viewModelScope.launch {
+                      var nextDeadlineNanos = System.nanoTime() + DIG_TICK_NANOS
+                      var previousCompletionNanos = System.nanoTime()
+
+                      while (isActive) {
+                          delayUntil(nextDeadlineNanos)
+                          val tickStartedNanos = System.nanoTime()
+                          val schedulerLateMs = ((tickStartedNanos - nextDeadlineNanos).coerceAtLeast(0L)) / 1_000_000f
+                          var diagnostics: MineTickDiagnostics? = null
+
+                          stateMutex.lock()
+                          try {
+                              val snapshot = mutableState.value
+                              if (!snapshot.isDigging) break
+                              val nextState = withContext(Dispatchers.Default) {
+                                  MineWorldController.tick(snapshot, DIG_TICK_SECONDS) { diagnostics = it }
+                              }
+                              mutableState.value = nextState
+                          } finally {
+                              stateMutex.unlock()
+                          }
+
+                          val completedNanos = System.nanoTime()
+                          diagnostics?.let { value ->
+                              tickSequence += 1
+                              mutableTickDiagnostics.value = SequencedTickDiagnostics(
+                                  sequence = tickSequence,
+                                  diagnostics = value,
+                                  schedulerLateMs = schedulerLateMs,
+                                  tickIntervalMs = (completedNanos - previousCompletionNanos) / 1_000_000f,
+                              )
+                          }
+                          previousCompletionNanos = completedNanos
+                          if (!mutableState.value.isDigging) break
+
+                          nextDeadlineNanos += DIG_TICK_NANOS
+                          if (nextDeadlineNanos <= completedNanos) {
+                              val missedIntervals = ((completedNanos - nextDeadlineNanos) / DIG_TICK_NANOS) + 1L
+                              nextDeadlineNanos += missedIntervals * DIG_TICK_NANOS
+                          }
+                      }
+                  }
+              }
+
+              private suspend fun delayUntil(deadlineNanos: Long) {
+                  val remainingNanos = deadlineNanos - System.nanoTime()
+                  if (remainingNanos > 0L) {
+                      delay((remainingNanos + 999_999L) / 1_000_000L)
+                  }
+              }
+
+              private companion object {
+                  const val DIG_TICK_MILLIS = 100L
+                  const val DIG_TICK_NANOS = DIG_TICK_MILLIS * 1_000_000L
+                  const val DIG_TICK_SECONDS = 0.10f
+              }
+          }
+          '''.replace("          ", ""))
+
+          # --- Diagnostics CSV: retain 1s sampling, add scheduler/spatial/refinement evidence. ---
+          Path("app/src/main/java/com/mineit/minegame/ui/MineDiagnosticsLog.kt").write_text('''package com.mineit.minegame.ui
+
+          import com.mineit.minegame.domain.MineWorldState
+          import com.mineit.minegame.ui.render.RenderPerformanceStats
+          import java.util.Locale
+
+          internal class MineDiagnosticsLog(private val startedAtMillis: Long = System.currentTimeMillis()) {
+              private val rows = mutableListOf<String>()
+              val recordCount: Int get() = rows.size
+
+              @Synchronized
+              fun record(
+                  event: String,
+                  state: MineWorldState,
+                  render: RenderPerformanceStats,
+                  tick: SequencedTickDiagnostics?,
+                  nowMillis: Long = System.currentTimeMillis(),
+              ) {
+                  val domainTick = tick?.diagnostics
+                  rows += listOf(
+                      nowMillis - startedAtMillis, event, state.isDigging, f(state.depthMetres), f(state.excavatedVolumeCubicMetres),
+                      f(state.totalMinedOreVolumeCubicMetres), render.framesPerSecond, f(render.frameTimeMs), f(render.lastChunkBuildMs),
+                      f(render.lastOreChunkBuildMs), f(render.lastOreGridStepMetres), f(render.lastCapBuildMs), f(render.lastUploadMs),
+                      render.triangleCount, render.oreTriangleCount, render.cachedChunks, render.cachedOreChunks, render.queuedChunks,
+                      render.queuedOreChunks, render.queuedOreBackgroundChunks, render.meshWorkerBusy, render.oreWorkerBusy,
+                      f(domainTick?.totalMs), f(domainTick?.materialMs), f(domainTick?.discoveryMs), f(tick?.schedulerLateMs),
+                      f(tick?.tickIntervalMs), domainTick?.classification?.candidateSamples ?: 0,
+                      domainTick?.classification?.newMaterialSamples ?: 0,
+                      domainTick?.classification?.nearbyExistingSegments ?: 0,
+                      domainTick?.classification?.nearbyOreBodies ?: 0,
+                      domainTick?.classification?.existingTunnelChecks ?: 0,
+                      domainTick?.classification?.oreFieldEvaluations ?: 0, f(domainTick?.segmentLengthMetres),
+                      f(domainTick?.newExcavatedVolumeCubicMetres), f(domainTick?.oreVolumeCubicMetres),
+                      f(domainTick?.wasteRockVolumeCubicMetres),
+                  ).joinToString(",")
+              }
+
+              @Synchronized fun clear() = rows.clear()
+              @Synchronized fun toCsv(): String = buildString {
+                  appendLine("elapsed_ms,event,digging,depth_m,removed_m3,ore_m3,fps,frame_ms,rock_mesh_ms,ore_mesh_ms,ore_grid_m,cap_ms,upload_ms,triangles,ore_triangles,rock_chunks,ore_chunks,rock_queue,ore_queue,ore_background_queue,rock_busy,ore_busy,tick_ms,material_ms,discovery_ms,scheduler_late_ms,tick_interval_ms,candidate_samples,new_samples,nearby_tunnel_segments,nearby_ore_bodies,tunnel_checks,ore_field_evals,segment_m,new_volume_m3,tick_ore_m3,tick_waste_m3")
+                  rows.forEach(::appendLine)
+              }
+
+              private fun f(value: Float?): String = if (value == null) "" else String.format(Locale.US, "%.3f", value)
+          }
+          '''.replace("          ", ""))
+
+          # --- Ore chunk planning: don't fill or invalidate the empty rectangle around a curved deposit. ---
+          Path("app/src/main/java/com/mineit/minegame/ui/render/OreChunkPlanner.kt").write_text('''package com.mineit.minegame.ui.render
+
+          import com.mineit.minegame.domain.MinePoint3D
+          import com.mineit.minegame.domain.MineWorldBounds
+          import com.mineit.minegame.domain.MineWorldGeometry
+          import com.mineit.minegame.domain.OreBody
+          import com.mineit.minegame.domain.OreBodyNode
+          import com.mineit.minegame.domain.TunnelSegment
+          import kotlin.math.floor
+          import kotlin.math.max
+          import kotlin.math.min
+
+          /** Fixed-size render chunks for remaining-ore meshes. */
+          internal data class OreChunkKey(
+              val bodyId: String,
+              val x: Int,
+              val y: Int,
+              val z: Int,
+          ) {
+              fun bounds(): MineWorldBounds {
+                  val size = OreChunkPlanner.CHUNK_SIZE_METRES
+                  return MineWorldBounds(
+                      minX = x * size,
+                      maxX = (x + 1) * size,
+                      minY = y * size,
+                      maxY = (y + 1) * size,
+                      minZ = z * size,
+                      maxZ = (z + 1) * size,
+                  )
+              }
+          }
+
+          /** Disposable render-cache partitioning around the canonical domain deposit field. */
+          internal object OreChunkPlanner {
+              const val CHUNK_SIZE_METRES = 12f
+
+              fun chunksForBody(body: OreBody, worldBounds: MineWorldBounds): Set<OreChunkKey> {
+                  val bodyBounds = bodyBounds(body) ?: return emptySet()
+                  val clipped = intersect(bodyBounds, worldBounds) ?: return emptySet()
+                  return keysForBounds(body.id, clipped).filterTo(linkedSetOf()) { key ->
+                      bodyEnvelopeTouchesBounds(body, key.bounds())
+                  }
+              }
+
+              fun affectedChunks(
+                  segment: TunnelSegment,
+                  tunnelRadiusMetres: Float,
+                  body: OreBody,
+                  worldBounds: MineWorldBounds,
+                  extraPaddingMetres: Float,
+              ): Set<OreChunkKey> {
+                  val bodyBounds = bodyBounds(body) ?: return emptySet()
+                  val padding = tunnelRadiusMetres + extraPaddingMetres
+                  val cutBounds = MineWorldBounds(
+                      minX = min(segment.start.x, segment.end.x) - padding,
+                      maxX = max(segment.start.x, segment.end.x) + padding,
+                      minY = min(segment.start.y, segment.end.y) - padding,
+                      maxY = max(segment.start.y, segment.end.y) + padding,
+                      minZ = min(segment.start.z, segment.end.z) - padding,
+                      maxZ = max(segment.start.z, segment.end.z) + padding,
+                  )
+                  val clippedToBody = intersect(cutBounds, bodyBounds) ?: return emptySet()
+                  val clippedToWorld = intersect(clippedToBody, worldBounds) ?: return emptySet()
+                  return keysForBounds(body.id, clippedToWorld).filterTo(linkedSetOf()) { key ->
+                      bodyEnvelopeTouchesBoth(body, cutBounds, key.bounds())
+                  }
+              }
+
+              fun bodyBounds(body: OreBody): MineWorldBounds? = MineWorldGeometry.oreBodyBounds(body)
+
+              fun chunkCentre(key: OreChunkKey): MinePoint3D = key.bounds().centre
+
+              private fun bodyEnvelopeTouchesBounds(body: OreBody, bounds: MineWorldBounds): Boolean {
+                  if (body.nodes.size == 1) return intersects(nodeBounds(body.nodes.single()), bounds)
+                  for (index in 0 until body.nodes.lastIndex) {
+                      if (intersects(segmentEnvelope(body.nodes[index], body.nodes[index + 1]), bounds)) return true
+                  }
+                  return false
+              }
+
+              private fun bodyEnvelopeTouchesBoth(
+                  body: OreBody,
+                  first: MineWorldBounds,
+                  second: MineWorldBounds,
+              ): Boolean {
+                  if (body.nodes.size == 1) {
+                      val envelope = nodeBounds(body.nodes.single())
+                      return intersects(envelope, first) && intersects(envelope, second)
+                  }
+                  for (index in 0 until body.nodes.lastIndex) {
+                      val envelope = segmentEnvelope(body.nodes[index], body.nodes[index + 1])
+                      if (intersects(envelope, first) && intersects(envelope, second)) return true
+                  }
+                  return false
+              }
+
+              private fun segmentEnvelope(start: OreBodyNode, end: OreBodyNode): MineWorldBounds {
+                  val radius = max(start.radiusMetres, end.radiusMetres)
+                  return MineWorldBounds(
+                      minX = min(start.centre.x, end.centre.x) - radius,
+                      maxX = max(start.centre.x, end.centre.x) + radius,
+                      minY = min(start.centre.y, end.centre.y) - radius,
+                      maxY = max(start.centre.y, end.centre.y) + radius,
+                      minZ = min(start.centre.z, end.centre.z) - radius,
+                      maxZ = max(start.centre.z, end.centre.z) + radius,
+                  )
+              }
+
+              private fun nodeBounds(node: OreBodyNode) = MineWorldBounds(
+                  minX = node.centre.x - node.radiusMetres,
+                  maxX = node.centre.x + node.radiusMetres,
+                  minY = node.centre.y - node.radiusMetres,
+                  maxY = node.centre.y + node.radiusMetres,
+                  minZ = node.centre.z - node.radiusMetres,
+                  maxZ = node.centre.z + node.radiusMetres,
+              )
+
+              private fun keysForBounds(bodyId: String, bounds: MineWorldBounds): Set<OreChunkKey> {
+                  val size = CHUNK_SIZE_METRES
+                  val epsilon = 0.0001f
+                  val fromX = floor(bounds.minX / size).toInt()
+                  val toX = floor((bounds.maxX - epsilon) / size).toInt()
+                  val fromY = floor(bounds.minY / size).toInt()
+                  val toY = floor((bounds.maxY - epsilon) / size).toInt()
+                  val fromZ = floor(bounds.minZ / size).toInt()
+                  val toZ = floor((bounds.maxZ - epsilon) / size).toInt()
+                  if (fromX > toX || fromY > toY || fromZ > toZ) return emptySet()
+
+                  return buildSet {
+                      for (z in fromZ..toZ) {
+                          for (y in fromY..toY) {
+                              for (x in fromX..toX) {
+                                  add(OreChunkKey(bodyId = bodyId, x = x, y = y, z = z))
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private fun intersects(a: MineWorldBounds, b: MineWorldBounds): Boolean =
+                  a.maxX >= b.minX && a.minX <= b.maxX &&
+                      a.maxY >= b.minY && a.minY <= b.maxY &&
+                      a.maxZ >= b.minZ && a.minZ <= b.maxZ
+
+              internal fun intersect(a: MineWorldBounds, b: MineWorldBounds): MineWorldBounds? {
+                  val minX = max(a.minX, b.minX)
+                  val maxX = min(a.maxX, b.maxX)
+                  val minY = max(a.minY, b.minY)
+                  val maxY = min(a.maxY, b.maxY)
+                  val minZ = max(a.minZ, b.minZ)
+                  val maxZ = min(a.maxZ, b.maxZ)
+                  if (minX >= maxX || minY >= maxY || minZ >= maxZ) return null
+                  return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
+              }
+          }
+          '''.replace("          ", ""))
+
+          # --- Renderer: urgent live chunks + lazy reveal/refinement; no Stop-time fine queue burst. ---
+          path = "app/src/main/java/com/mineit/minegame/ui/render/MineWorldGlRenderer.kt"
+          replace_once(path,
+          '''    val queuedOreChunks: Int = 0,
+              val meshWorkerBusy: Boolean = false,
+          ''',
+          '''    val queuedOreChunks: Int = 0,
+              val queuedOreBackgroundChunks: Int = 0,
+              val meshWorkerBusy: Boolean = false,
+          ''')
+          replace_once(path,
+          '''    private data class CachedChunk(
+              val mesh: GlMesh?,
+              val gridStepMetres: Float,
+          )
+
+          private val chunkMeshes = linkedMapOf<ChunkKey, CachedChunk>()
+          ''',
+          '''    private data class CachedChunk(
+              val mesh: GlMesh?,
+              val gridStepMetres: Float,
+          )
+
+          private data class CachedOreChunk(
+              val mesh: GlMesh?,
+              val gridStepMetres: Float,
+          )
+
+          private val chunkMeshes = linkedMapOf<ChunkKey, CachedChunk>()
+          ''')
+          replace_once(path,
+          '''    private val oreChunkMeshes = linkedMapOf<OreChunkKey, GlMesh?>()
+              private val pendingOreChunkBuilds = linkedMapOf<OreChunkKey, Float>()
+              private val activeOreDirtyChunks = linkedSetOf<OreChunkKey>()
+              private val oreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+              private val appliedOreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+              private val oreChunksTouchedDuringDigging = linkedSetOf<OreChunkKey>()
+          ''',
+          '''    private val oreChunkMeshes = linkedMapOf<OreChunkKey, CachedOreChunk>()
+              private val pendingOreChunkBuilds = linkedMapOf<OreChunkKey, Float>()
+              private val oreRevealCandidates = linkedSetOf<OreChunkKey>()
+              private val oreRefinementCandidates = linkedSetOf<OreChunkKey>()
+              private val activeOreDirtyChunks = linkedSetOf<OreChunkKey>()
+              private val oreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+              private val appliedOreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+          ''')
+          text = Path(path).read_text()
+          text = text.replace("        oreChunksTouchedDuringDigging.clear()\n", "")
+          text = text.replace("        oreChunkMeshes.values.forEach(::deleteMesh)\n", "        oreChunkMeshes.values.forEach { deleteMesh(it.mesh) }\n")
+          text = text.replace("        oreChunkMeshes.values.forEach(::drawMesh)\n", "        oreChunkMeshes.values.forEach { drawMesh(it.mesh) }\n")
+          Path(path).write_text(text)
+          replace_once(path,
+          '''        oreChunkMeshes.clear()
+              pendingOreChunkBuilds.clear()
+              activeOreDirtyChunks.clear()
+          ''',
+          '''        oreChunkMeshes.clear()
+              pendingOreChunkBuilds.clear()
+              oreRevealCandidates.clear()
+              oreRefinementCandidates.clear()
+              activeOreDirtyChunks.clear()
+          ''')
+          replace_once(path,
+          '''                state.discoveredOreBodies.forEach { body ->
+                      val affectedOre = OreChunkPlanner.affectedChunks(
+                          segment = segment,
+                          tunnelRadiusMetres = state.tunnel.radiusMetres,
+                          body = body,
+                          worldBounds = state.bounds,
+                          extraPaddingMetres = LIVE_ORE_GRID_STEP_METRES,
+                      )
+                      oreChunksTouchedDuringDigging += affectedOre
+                      activeOreDirtyChunks += affectedOre
+                  }
+          ''',
+          '''                state.discoveredOreBodies.forEach { body ->
+                      val affectedOre = OreChunkPlanner.affectedChunks(
+                          segment = segment,
+                          tunnelRadiusMetres = state.tunnel.radiusMetres,
+                          body = body,
+                          worldBounds = state.bounds,
+                          extraPaddingMetres = LIVE_ORE_GRID_STEP_METRES,
+                      )
+                      affectedOre.forEach { key ->
+                          oreRevealCandidates.remove(key)
+                          oreRefinementCandidates.remove(key)
+                      }
+                      activeOreDirtyChunks += affectedOre
+                  }
+          ''')
+          replace_once(path,
+          '''            oreChunksTouchedDuringDigging.forEach { key ->
+                  markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES, replaceExisting = true)
+              }
+              oreChunksTouchedDuringDigging.clear()
+              activeOreDirtyChunks.clear()
+          ''',
+          '''            activeOreDirtyChunks.forEach { key ->
+                  markOreChunkForBuild(key, LIVE_ORE_GRID_STEP_METRES, replaceExisting = true)
+              }
+              activeOreDirtyChunks.clear()
+          ''')
+          replace_once(path,
+          '''        if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
+              sliceDirty = true
+              oreSliceDirty = true
+              val newlyDiscovered = state.discoveredOreBodyIds - previous.discoveredOreBodyIds
+              state.oreBodies
+                  .filter { it.id in newlyDiscovered }
+                  .forEach { body ->
+                      OreChunkPlanner.chunksForBody(body, state.bounds).forEach { key ->
+                  markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES)
+              }
+                  }
+          }
+          ''',
+          '''        if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
+              sliceDirty = true
+              oreSliceDirty = true
+              oreCacheDirty = true
+          }
+          ''')
+          replace_once(path,
+          '''    private fun queueOreRebuildsIfNeeded(state: MineWorldState) {
+              if (!oreCacheDirty || state.isDigging) return
+              state.discoveredOreBodies.forEach { body ->
+                  OreChunkPlanner.chunksForBody(body, state.bounds).forEach { key ->
+                      markOreChunkForBuild(key, OreMeshBuilder.BODY_GRID_STEP_METRES)
+                  }
+              }
+              oreCacheDirty = false
+          }
+          ''',
+          '''    private fun queueOreRebuildsIfNeeded(state: MineWorldState) {
+              if (!oreCacheDirty) return
+              state.discoveredOreBodies.forEach { body ->
+                  OreChunkPlanner.chunksForBody(body, state.bounds).forEach { key ->
+                      if (key !in oreChunkMeshes && key !in pendingOreChunkBuilds) {
+                          oreRevealCandidates += key
+                      }
+                  }
+              }
+              oreCacheDirty = false
+          }
+          ''')
+          replace_once(path,
+          '''    private fun markOreChunkForBuild(
+              key: OreChunkKey,
+              gridStepMetres: Float,
+              replaceExisting: Boolean = false,
+          ) {
+              val existing = pendingOreChunkBuilds[key]
+          ''',
+          '''    private fun markOreChunkForBuild(
+              key: OreChunkKey,
+              gridStepMetres: Float,
+              replaceExisting: Boolean = false,
+          ) {
+              oreRevealCandidates.remove(key)
+              oreRefinementCandidates.remove(key)
+              val existing = pendingOreChunkBuilds[key]
+          ''')
+          replace_once(path,
+          '''            val previous = oreChunkMeshes.put(result.key, uploaded)
+              deleteMesh(previous)
+              appliedOreChunkRevisions[result.key] = result.revision
+              lastOreChunkBuildMs = result.buildMs
+              lastOreGridStepMetres = result.gridStepMetres
+              peakOreChunkBuildMs = max(peakOreChunkBuildMs, result.buildMs)
+              oreChunksRebuiltSinceStats += 1
+          ''',
+          '''            val previous = oreChunkMeshes.put(
+                  result.key,
+                  CachedOreChunk(mesh = uploaded, gridStepMetres = result.gridStepMetres),
+              )
+              deleteMesh(previous?.mesh)
+              appliedOreChunkRevisions[result.key] = result.revision
+              lastOreChunkBuildMs = result.buildMs
+              lastOreGridStepMetres = result.gridStepMetres
+              peakOreChunkBuildMs = max(peakOreChunkBuildMs, result.buildMs)
+              oreChunksRebuiltSinceStats += 1
+              if (result.gridStepMetres > OreMeshBuilder.BODY_GRID_STEP_METRES + 0.01f) {
+                  oreRefinementCandidates += result.key
+              } else {
+                  oreRefinementCandidates.remove(result.key)
+              }
+          ''')
+
+          start = Path(path).read_text().index("    private fun scheduleNextOreChunkBuild(state: MineWorldState) {")
+          end = Path(path).read_text().index("    private fun scheduleNextChunkBuilds(state: MineWorldState) {", start)
+          text = Path(path).read_text()
+          new_schedule = '''    private fun scheduleNextOreChunkBuild(state: MineWorldState) {
+              if (meshBuildCoordinator.availableOreSlots() <= 0) return
+
+              val urgent = pendingOreChunkBuilds.entries.minByOrNull { entry ->
+                  MineWorldGeometry.distance(OreChunkPlanner.chunkCentre(entry.key), state.tunnel.end)
+              }
+              if (urgent != null) {
+                  val revision = oreChunkRevisions[urgent.key] ?: return
+                  if (submitOreChunkBuild(state, urgent.key, urgent.value, revision)) {
+                      pendingOreChunkBuilds.remove(urgent.key)
+                  }
+                  return
+              }
+
+              // Fine refinement and full-body reveal are deliberately idle work. During digging the
+              // ore worker is reserved for the small coarse chunks immediately touched by the cutter.
+              if (state.isDigging) return
+              val lazyKey = (oreRevealCandidates + oreRefinementCandidates).minByOrNull { candidate ->
+                  MineWorldGeometry.distance(OreChunkPlanner.chunkCentre(candidate), state.tunnel.end)
+              } ?: return
+              val gridStep = if (lazyKey in oreRevealCandidates) {
+                  LIVE_ORE_GRID_STEP_METRES
+              } else {
+                  OreMeshBuilder.BODY_GRID_STEP_METRES
+              }
+              val revision = (oreChunkRevisions[lazyKey] ?: 0L) + 1L
+              oreChunkRevisions[lazyKey] = revision
+              if (submitOreChunkBuild(state, lazyKey, gridStep, revision)) {
+                  oreRevealCandidates.remove(lazyKey)
+                  oreRefinementCandidates.remove(lazyKey)
+              }
+          }
+
+          private fun submitOreChunkBuild(
+              state: MineWorldState,
+              key: OreChunkKey,
+              gridStepMetres: Float,
+              revision: Long,
+          ): Boolean {
+              val body = state.oreBodies.firstOrNull { it.id == key.bodyId }
+              if (body == null || key !in OreChunkPlanner.chunksForBody(body, state.bounds)) {
+                  pendingOreChunkBuilds.remove(key)
+                  oreRevealCandidates.remove(key)
+                  oreRefinementCandidates.remove(key)
+                  return false
+              }
+              return meshBuildCoordinator.trySubmitOreChunk(
+                  OreChunkBuildRequest(
+                      pipelineGeneration = pipelineGeneration,
+                      revision = revision,
+                      key = key,
+                      state = state,
+                      body = body,
+                      gridStepMetres = gridStepMetres,
+                  ),
+              )
+          }
+
+          '''
+          Path(path).write_text(text[:start] + new_schedule + text[end:])
+
+          replace_once(path,
+          '''        val oreVertices = oreChunkMeshes.values.sumOf { it?.vertexCount ?: 0 } +
+          ''',
+          '''        val oreVertices = oreChunkMeshes.values.sumOf { it.mesh?.vertexCount ?: 0 } +
+          ''')
+          replace_once(path,
+          '''                cachedOreChunks = oreChunkMeshes.values.count { it != null },
+                  chunksRebuilt = chunksRebuiltSinceStats,
+                  oreChunksRebuilt = oreChunksRebuiltSinceStats,
+                  queuedChunks = pendingChunkBuilds.size,
+                  queuedOreChunks = pendingOreChunkBuilds.size,
+                  meshWorkerBusy = meshBuildCoordinator.isChunkBusy(),
+          ''',
+          '''                cachedOreChunks = oreChunkMeshes.size,
+                  chunksRebuilt = chunksRebuiltSinceStats,
+                  oreChunksRebuilt = oreChunksRebuiltSinceStats,
+                  queuedChunks = pendingChunkBuilds.size,
+                  queuedOreChunks = pendingOreChunkBuilds.size,
+                  queuedOreBackgroundChunks = oreRevealCandidates.size + oreRefinementCandidates.size,
+                  meshWorkerBusy = meshBuildCoordinator.isChunkBusy(),
+          ''')
+
+          # --- Compose diagnostics uses richer tick wrapper and shows background queue separately. ---
+          path = "app/src/main/java/com/mineit/minegame/ui/MineWorldScreen.kt"
+          replace_once(path,
+          '''    val latestTick by rememberUpdatedState(tickDiagnostics?.diagnostics)
+          ''',
+          '''    val latestTick by rememberUpdatedState(tickDiagnostics)
+          ''')
+          replace_once(path,
+          '''        val tick = tickDiagnostics?.diagnostics ?: return@LaunchedEffect
+              if (tick.totalMs >= 20f || tick.materialMs >= 20f || tick.discoveryMs >= 20f) {
+                  diagnosticsLog.record("tick_spike", state, performanceStats, tick)
+          ''',
+          '''        val sequenced = tickDiagnostics ?: return@LaunchedEffect
+              val tick = sequenced.diagnostics
+              if (tick.totalMs >= 20f || tick.materialMs >= 20f || tick.discoveryMs >= 20f || sequenced.schedulerLateMs >= 20f) {
+                  diagnosticsLog.record("tick_spike", state, performanceStats, sequenced)
+          ''')
+          replace_once(path,
+          '''            diagnosticsLog.record("mesh_event", state, performanceStats, tickDiagnostics?.diagnostics)
+          ''',
+          '''            diagnosticsLog.record("mesh_event", state, performanceStats, tickDiagnostics)
+          ''')
+          replace_once(path,
+          '''                    text = "LIVE ORE + DIAGNOSTIC CAPTURE",
+          ''',
+          '''                    text = "ASYNC MINING + LAZY ORE REFINEMENT",
+          ''')
+          replace_once(path,
+          '''            append("q R${stats.queuedChunks}/O${stats.queuedOreChunks}  workers R${if (stats.meshWorkerBusy) "BUSY" else "IDLE"}/O${if (stats.oreWorkerBusy) "BUSY" else "IDLE"}")
+          ''',
+          '''            append("q R${stats.queuedChunks}/O${stats.queuedOreChunks} bg${stats.queuedOreBackgroundChunks}  workers R${if (stats.meshWorkerBusy) "BUSY" else "IDLE"}/O${if (stats.oreWorkerBusy) "BUSY" else "IDLE"}")
+          ''')
+          replace_once(path,
+          '''            "ore ${performanceStats.cachedOreChunks}ch/${performanceStats.queuedOreChunks}q",
+          ''',
+          '''            "ore ${performanceStats.cachedOreChunks}ch/${performanceStats.queuedOreChunks}q/${performanceStats.queuedOreBackgroundChunks}bg",
+          ''')
+          replace_once(path,
+          '''        text = "Excavation is partitioned once into mined ore or waste rock; remaining ore is original geology minus the cutter volume, and only locally affected ore chunks are remeshed after a pass.",
+          ''',
+          '''        text = "Mining classification runs off the UI thread at a fixed 10 Hz deadline. Live ore cuts use urgent coarse chunks; full reveal and 0.6m refinement are lazy idle work.",
+          ''')
+
+          # --- Regression coverage for spatial rejection/chunk occupancy. ---
+          path = "app/src/test/java/com/mineit/minegame/domain/MineWorldControllerTest.kt"
+          marker = '''    @Test
+              fun `tick diagnostics report material work without changing accounting`() {
+          '''
+          insertion = '''    @Test
+              fun classificationRejectsFarOreBodiesBeforeFieldEvaluation() {
+                  val near = OreBody(
+                      id = "near",
+                      type = OreType.COPPER,
+                      nodes = listOf(
+                          OreBodyNode(MinePoint3D(0f, 0f, 4f), 4f),
+                          OreBodyNode(MinePoint3D(0f, 0f, 12f), 4f),
+                      ),
+                  )
+                  val far = OreBody(
+                      id = "far",
+                      type = OreType.GOLD,
+                      nodes = listOf(
+                          OreBodyNode(MinePoint3D(200f, 200f, 4f), 4f),
+                          OreBodyNode(MinePoint3D(200f, 200f, 12f), 4f),
+                      ),
+                  )
+                  var diagnostics: ExcavationClassificationDiagnostics? = null
+                  val material = MineWorldGeometry.classifyNewExcavation(
+                      start = MinePoint3D(0f, 0f, 4f),
+                      end = MinePoint3D(0f, 0f, 5f),
+                      tunnelRadiusMetres = 3.2f,
+                      existingTunnelSegments = emptyList(),
+                      oreBodies = listOf(near, far),
+                      onDiagnostics = { diagnostics = it },
+                  )
+
+                  val measured = requireNotNull(diagnostics)
+                  assertEquals(1, measured.nearbyOreBodies)
+                  assertTrue(measured.oreFieldEvaluations <= measured.newMaterialSamples)
+                  assertTrue(material.oreVolumeCubicMetres > 0f)
+                  assertEquals(
+                      material.newExcavatedVolumeCubicMetres,
+                      material.wasteRockVolumeCubicMetres + material.oreVolumeCubicMetres,
+                      0.001f,
+                  )
+              }
+
+          '''
+          text = Path(path).read_text()
+          if marker not in text:
+              raise SystemExit("controller test marker missing")
+          Path(path).write_text(text.replace(marker, insertion + marker, 1))
+
+          path = "app/src/test/java/com/mineit/minegame/ui/render/OreChunkPlannerTest.kt"
+          marker = '''    @Test
+              fun bodyGridAlignsExactlyWithOreChunkEdges() {
+          '''
+          insertion = '''    @Test
+              fun curvedDepositDoesNotAllocateEveryChunkInsideItsOverallBoundingBox() {
+                  val world = MineWorldBounds(-48f, 48f, -48f, 48f, 0f, 96f)
+                  val body = OreBody(
+                      id = "bent-gold",
+                      type = OreType.GOLD,
+                      nodes = listOf(
+                          OreBodyNode(MinePoint3D(-36f, -36f, 24f), 2f),
+                          OreBodyNode(MinePoint3D(-36f, 36f, 24f), 2f),
+                          OreBodyNode(MinePoint3D(36f, 36f, 24f), 2f),
+                      ),
+                  )
+
+                  val planned = OreChunkPlanner.chunksForBody(body, world)
+                  val emptyInsideOverallBox = OreChunkKey(body.id, 2, -2, 2)
+
+                  assertTrue(planned.isNotEmpty())
+                  assertTrue("empty rectangle inside the overall bounds must not become an ore chunk", emptyInsideOverallBox !in planned)
+              }
+
+          '''
+          text = Path(path).read_text()
+          if marker not in text:
+              raise SystemExit("ore planner test marker missing")
+          Path(path).write_text(text.replace(marker, insertion + marker, 1))
+
+          # --- Release/version/docs. ---
+          path = "app/build.gradle.kts"
+          replace_once(path, '        versionCode = 20\n        versionName = "0.13.2"\n', '        versionCode = 21\n        versionName = "0.13.3"\n')
+
+          path = "README.md"
+          replace_once(path, "## Current prototype — 0.13.2", "## Current prototype — 0.13.3")
+          replace_once(path,
+          "0.13.2 keeps the chunked subtractive ore renderer and adds coarse live ore remeshing while digging, plus exportable diagnostics with one-second samples and spike/mesh events.",
+          "0.13.3 moves deterministic mining classification off the Android UI thread, keeps the 10 Hz simulation on fixed deadlines, spatially rejects irrelevant ore/tunnel work, and changes full-body ore reveal/fine meshing into lazy idle refinement instead of a Stop-time queue burst. Exportable diagnostics now include scheduler and background-refinement evidence.")
+
+          path = "docs/DEPOSIT_GEOMETRY_REDESIGN.md"
+          p = Path(path)
+          text = p.read_text()
+          note = "\n### 0.13.3 performance refinement\n\nSubtractive geometry remains unchanged. Mining classification now runs off the UI thread on a fixed 10 Hz schedule, allocation-heavy field checks are spatially rejected/streamlined, and ore render chunks use urgent 1.2m live updates with lazy idle 0.6m refinement. This is a cache/scheduling optimisation only; domain geology and material accounting remain canonical.\n"
+          if "### 0.13.3 performance refinement" not in text:
+              p.write_text(text.rstrip() + "\n" + note)
+          PY
+      - name: Validate patch
+        run: |
+          git diff --check
+          grep -R "versionName = \"0.13.3\"" app/build.gradle.kts
+      - name: Commit source changes
+        run: |
+          git config user.name "kevvy555"
+          git config user.email "kevvy555@googlemail.com"
+          git add README.md app docs
+          git commit -m "perf: move mining work off UI thread"
+          git push origin HEAD:feature/mining-performance-pass
