@@ -1,94 +1,89 @@
-# 3D Geological World POC — 0.9.0
+# 3D Geological World POC — 0.10.0
 
-## Why 0.9 exists
+## What 0.10 adds
 
-0.8 proved that OpenGL rendering itself is not the mobile bottleneck: the Pixel 7 continued to hold roughly 90 FPS. It also exposed two architectural defects in the presentation pipeline.
+0.9 proved the immediate CT/global-shell architecture on mobile. 0.10 keeps that architecture and adds two inspection tools plus the first typed procedural geology.
 
-1. The shader clip plane moved immediately with the X/Y/Z slider, but the solid CT face was a separately generated CPU mesh. On a larger world that mesh could arrive hundreds of milliseconds later, so the visible cut face lagged behind the slider.
-2. The enclosing geological block was still represented as many asynchronous boundary-chunk meshes. When the generated world expanded, old boundary chunks disappeared before all replacement boundary chunks had arrived, producing large rectangular holes and a queue that again grew into the tens/hundreds.
-
-0.9 removes both failure modes instead of tuning their timers.
+- **PAN** switches one-finger drag from orbit rotation to screen-space camera movement. Pinch zoom continues to work in both modes.
+- **SEE ORE** is an explicit inspection/debug view that renders all ore bodies inside the currently generated geology through the rock.
+- The old generic single ore body is replaced by deterministic **Gold, Silver and Copper** deposits.
 
 ## Canonical ownership
 
-`domain/` remains authoritative for the real mine: tunnel path, machine position/direction, ore discovery, material removal, excavation speed and generated extent.
+`domain/` owns the real mine and geology: tunnel path, generated extent, seeded ore bodies, ore types, body shapes and discovery state.
 
-The renderer owns only presentation: camera, clipping, global shell, CT face, cached excavation meshes and ROCK OFF presentation.
+`ui/render/` owns transient inspection state: rotate/pan selection, zoom, CT clipping and SEE ORE presentation. SEE ORE never modifies discovery state.
 
-## Global geological shell
+## Seeded typed ore geology
 
-The untouched geological volume is no longer a collection of boundary chunk jobs.
+The POC uses a fixed seed so the same mine always produces the same geology during testing.
 
-The renderer now builds one constant-cost shell from the current world bounds:
+Each ore deposit is a continuous 3D body made from a sequence of control nodes. Every node contains an X/Y/Z position and a radius. Consecutive nodes form a varying-width tube, so ore is not represented as visible cubic blocks.
 
-- four vertical rock walls;
-- one bottom rock face;
-- the grass surface is a separate mesh so the mine entrance can remain open.
+The first generator creates six independent deposits:
 
-Changing the world from 48 m wide to hundreds of metres wide changes vertex positions, not the number of shell jobs. There is therefore no period where old wall chunks have disappeared while replacement wall chunks are waiting in the polygonisation queue.
+- two **Gold** bodies — thinner, shorter and more irregular;
+- two **Silver** bodies — medium width and continuity;
+- two **Copper** bodies — broader, longer and less erratic.
 
-Chunk meshing is now reserved exclusively for chunks containing actual excavation.
+Bodies may extend beyond the initial world bounds. They are generated from the seed rather than spawned when the player reaches them, so expanding the geological world reveals more of an already-defined deposit.
 
-## Excavation-only scalar meshes
+## Discovery
 
-Detailed tunnel walls still use the scalar field and marching tetrahedra, because that is where smooth arbitrary excavation matters.
+Normal play keeps undiscovered ore hidden. Each new excavation segment is tested against undiscovered typed ore bodies. Intersecting a body marks that connected deposit as discovered and it remains known afterwards.
 
-A detailed chunk samples only distance to nearby tunnel segments. It no longer also generates world-box boundary surfaces. Untouched chunks produce no detailed mesh at all.
+SEE ORE bypasses that visibility rule only for inspection. It renders the generated Gold/Silver/Copper bodies without changing the domain discovery set.
 
-This changes the key scaling property from:
+## Ore presentation
 
-> cost grows with the enclosing geological box
+SEE ORE uses lightweight tube geometry rather than feeding ore through the expensive tunnel scalar-field mesher.
 
-into:
+- Gold is rendered gold/yellow.
+- Silver is rendered pale silver/blue-grey.
+- Copper is rendered copper/orange.
+- Only parts overlapping the currently generated mine bounds are sent to the renderer.
+- In SEE ORE mode the bodies are drawn as an x-ray overlay through rock so their full 3D relationship can be inspected while rotating, panning, zooming and slicing.
 
-> cost grows with the excavated workings
+## Touch camera controls
 
-## Immediate analytic CT slices
+The VIEW panel now exposes the complete touchscreen camera set:
 
-The CT cut face is no longer generated by scanning a regular 2D grid across the entire X/Y/Z cross-section.
+- default one-finger drag: **rotate/orbit**;
+- PAN selected: one-finger drag **moves the camera target in screen-space left/right/up/down**;
+- pinch: **zoom** in either mode;
+- RESET clears zoom, rotation and pan offsets.
 
-Each frame that the slice changes, the renderer can cheaply construct:
+PAN is implemented in camera right/up coordinates, so dragging remains intuitive after rotating the mine rather than being tied to fixed world X/Y axes.
 
-1. a rock plane exactly at the selected X/Y/Z position;
-2. depth shading bands for vertical sections;
-3. purple analytic intersections where the discovered connected ore body crosses the plane;
-4. dark analytic intersections where excavated tunnel geometry crosses the plane.
+## Existing 0.9 architecture retained
 
-Only tunnel segments near the selected plane are considered, and those segments are still compacted for presentation.
-
-The slice is built directly on the OpenGL render thread because its work is now proportional to actual intersections rather than world area. This is intentional: it guarantees the CT face and shader clip use the same current slider value in the same frame. There is no asynchronous CT queue and therefore no stale intermediate slice that can visibly trail the user's finger.
-
-The diagnostics `cap ms` field now measures this immediate analytic slice build; `cap BUSY` should remain idle because there is no cap worker.
-
-## Surface and ROCK OFF
-
-Grass remains a separate surface mesh and is retained in ROCK OFF mode. The existing direct tunnel overview remains independent of the detailed rock mesh, so the player can still inspect the entire workings even if tunnel-wall refinement is occurring in the background.
-
-## Background work that remains
-
-Only detailed excavation chunks use background workers.
-
-- two bounded low-priority workers remain;
-- current-face coarse work remains prioritised over stopped refinement;
-- tunnel-segment reduction remains in place;
-- completed tunnel chunks are progressively uploaded;
-- world expansion does not enqueue untouched rock.
+- one coherent constant-cost geological shell;
+- grass as a separate surface mesh;
+- detailed marching-tetrahedra geometry only around excavation;
+- immediate analytic X/Y/Z CT faces with no asynchronous cap queue;
+- chunk work scales with actual workings rather than untouched world volume;
+- ROCK OFF and Digger POV remain available.
 
 ## What to test on device
 
-1. Move X, Y and Z sliders rapidly through a small and a large world. The solid CT face should stay visually attached to the slider rather than catching up afterwards.
-2. Expand the mine substantially in X/Y/Z. Outer rock walls should remain one coherent block with no rectangular missing boundary regions.
-3. Dig at 2.0× for a long period. `queue` should represent excavation work only and should not grow merely because the world box gains surface area.
-4. Compare `cap ms` with the 0.8 deep-world examples that reached hundreds of milliseconds. It should be near-constant and dramatically lower.
-5. Confirm ROCK OFF still shows the complete tunnel network and grass reference surface.
-6. Confirm the tunnel entrance remains open at the grass surface.
+1. Rotate the mine, enable PAN, and swipe in every direction. The visible mine should translate relative to the screen without changing its orientation.
+2. Pinch zoom while PAN is selected and confirm zoom behaves exactly as before.
+3. Toggle PAN off and confirm one-finger drag returns to rotation.
+4. Enable SEE ORE and inspect the six seeded deposits from multiple angles and X/Y/Z slices.
+5. Verify Gold looks thinner/more irregular, Silver intermediate, and Copper visibly broader.
+6. Disable SEE ORE and confirm undiscovered deposits disappear again.
+7. Dig into the starter Gold body and confirm only genuinely discovered geology remains visible in normal mode.
+8. Expand the world and confirm additional portions of pre-seeded deposits become visible rather than changing shape or relocating.
+9. Confirm FPS and excavation queues remain comparable to 0.9.
 
 ## Still outside this POC
 
+- grades and ore quality;
+- processing/refining and economics;
+- geological faults, branching/mineralisation families and realistic deposit genesis;
+- exploration confidence/uncertainty;
 - broken-rock haulage and disposal;
 - shaft hoisting;
 - workers, power and ventilation;
-- multiple geology families;
-- exploration confidence/uncertainty;
-- production stopes and arbitrary excavation profiles;
+- production stopes;
 - save/load and sparse disk-backed world streaming.
