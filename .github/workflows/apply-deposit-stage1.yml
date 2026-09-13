@@ -1,0 +1,894 @@
+name: Apply Deposit Stage 1
+
+on:
+  push:
+    branches:
+      - feature/deposit-geometry-redesign
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[deposit-stage1]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/deposit-geometry-redesign
+          fetch-depth: 0
+
+      - name: Apply Stage 1 subtractive deposit geometry
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one occurrence, found {count}: {old[:100]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          # Domain: original deposits stay immutable; remaining material is original minus excavation.
+          geometry = Path("app/src/main/java/com/mineit/minegame/domain/MineWorldGeometry.kt")
+          text = geometry.read_text()
+          text = text.replace("import kotlin.math.PI\nimport kotlin.math.acos\n", "")
+          text = text.replace(
+              "    private const val MATERIAL_SAMPLE_SPACING_METRES = 0.45f\n    private const val DEPLETION_NODE_SPACING_METRES = 0.9f\n    private const val MIN_REMAINING_ORE_RADIUS_METRES = 0.03f\n",
+              "    private const val MATERIAL_SAMPLE_SPACING_METRES = 0.45f\n",
+          )
+          marker = "    fun solidMargin(\n"
+          if text.count(marker) != 2:
+              raise SystemExit(f"MineWorldGeometry solidMargin marker expected twice, found {text.count(marker)}")
+          first = text.index(marker)
+          addition = '''    /**
+     * Signed remaining-ore field. Positive values are solid ore, zero is its current surface and
+     * negative values are outside the original deposit or inside already excavated space.
+     *
+     * The original deposit definition is never mutated. Any mining tool can therefore become an
+     * excavation primitive without teaching every deposit shape how to "shrink" itself.
+     */
+    fun remainingOreMargin(
+        point: MinePoint3D,
+        oreBody: OreBody,
+        tunnelRadiusMetres: Float,
+        excavationSegments: Collection<TunnelSegment>,
+    ): Float = min(
+        oreMargin(point, oreBody.nodes),
+        distanceToTunnelSegments(point, excavationSegments) - tunnelRadiusMetres,
+    )
+
+    fun remainingOreMargin(
+        point: MinePoint3D,
+        oreBody: OreBody,
+        tunnel: TunnelGeometry,
+    ): Float = remainingOreMargin(
+        point = point,
+        oreBody = oreBody,
+        tunnelRadiusMetres = tunnel.radiusMetres,
+        excavationSegments = tunnel.segments,
+    )
+
+'''
+          text = text[:first] + addition + text[first:]
+
+          text, count = re.subn(
+              r'\n    /\*\*\n     \* Applies excavation to the canonical remaining ore geometry\..*?\n    fun exposedOreSegments\(',
+              '\n    fun exposedOreSegments(',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"MineWorldGeometry: failed to remove radius depletion block ({count})")
+
+          text, count = re.subn(
+              r'\n    private fun densifyOreNodes\(.*?\n    private fun isInsideFiniteCylinder\(',
+              '\n    private fun isInsideFiniteCylinder(',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"MineWorldGeometry: failed to remove densify helper ({count})")
+
+          text, count = re.subn(
+              r'\n    private fun circleIntersectionArea\(.*?\n    private fun closestParameter\(',
+              '\n    private fun closestParameter(',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"MineWorldGeometry: failed to remove circle-intersection shrink helper ({count})")
+          geometry.write_text(text)
+
+          controller = Path("app/src/main/java/com/mineit/minegame/domain/MineWorldController.kt")
+          text = controller.read_text()
+          text, count = re.subn(
+              r'\n        val depletedOreBodies = MineWorldGeometry\.depleteOreBodies\(.*?\n        \)\n',
+              '\n',
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f"MineWorldController: failed to remove deplete call ({count})")
+          if "            oreBodies = depletedOreBodies,\n" not in text:
+              raise SystemExit("MineWorldController: depleted ore state assignment not found")
+          text = text.replace("            oreBodies = depletedOreBodies,\n", "", 1)
+          controller.write_text(text)
+
+          state = Path("app/src/main/java/com/mineit/minegame/domain/MineWorldState.kt")
+          text = state.read_text()
+          old = '''    /**
+     * The detailed tunnel-wall renderer still asks for one body when colouring the wall. Typed
+     * [oreBodies] remain canonical; because they are depleted by excavation this view also reflects
+     * the remaining material rather than the original seeded body.
+     */'''
+          new = '''    /**
+     * Compatibility view used by the tunnel-wall colour pass. [oreBodies] are immutable original
+     * geology; remaining material is derived by subtracting excavation via MineWorldGeometry.
+     */'''
+          if old not in text:
+              raise SystemExit("MineWorldState oreBody documentation marker missing")
+          state.write_text(text.replace(old, new, 1))
+
+          # Shared scalar-field mesher used by deposit presentation. Deposit topology is no longer
+          # tied to tube rings, so holes/splits/notches are representable without changing domain data.
+          Path("app/src/main/java/com/mineit/minegame/ui/render/ScalarFieldMesher.kt").write_text(r'''package com.mineit.minegame.ui.render
+
+import com.mineit.minegame.domain.MinePoint3D
+import com.mineit.minegame.domain.MineWorldBounds
+import com.mineit.minegame.domain.MineWorldGeometry
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.sqrt
+
+/**
+ * Disposable presentation meshing for signed scalar fields.
+ *
+ * Domain code owns the field meaning; this class only samples it. Positive values are treated as
+ * solid material and negative values as empty space. Marching tetrahedra gives volume surfaces,
+ * while the slice path linearly clips plane triangles against the same field for CT consistency.
+ */
+internal object ScalarFieldMesher {
+    private val tetrahedra = arrayOf(
+        intArrayOf(0, 5, 1, 6),
+        intArrayOf(0, 1, 2, 6),
+        intArrayOf(0, 2, 3, 6),
+        intArrayOf(0, 3, 7, 6),
+        intArrayOf(0, 7, 4, 6),
+        intArrayOf(0, 4, 5, 6),
+    )
+
+    fun buildVolume(
+        bounds: MineWorldBounds,
+        gridStepMetres: Float,
+        colour: FloatArray,
+        field: (MinePoint3D) -> Float,
+    ): MineMesh {
+        if (bounds.width <= 0f || bounds.height <= 0f || bounds.depth <= 0f) return emptyMesh()
+
+        val xCells = cells(bounds.width, gridStepMetres)
+        val yCells = cells(bounds.height, gridStepMetres)
+        val zCells = cells(bounds.depth, gridStepMetres)
+        val xCount = xCells + 1
+        val yCount = yCells + 1
+        val zCount = zCells + 1
+        val dx = bounds.width / xCells
+        val dy = bounds.height / yCells
+        val dz = bounds.depth / zCells
+
+        fun point(x: Int, y: Int, z: Int) = MinePoint3D(
+            x = bounds.minX + (x * dx),
+            y = bounds.minY + (y * dy),
+            z = bounds.minZ + (z * dz),
+        )
+        fun index(x: Int, y: Int, z: Int): Int = ((z * yCount) + y) * xCount + x
+
+        val values = FloatArray(xCount * yCount * zCount)
+        for (z in 0 until zCount) {
+            for (y in 0 until yCount) {
+                for (x in 0 until xCount) {
+                    values[index(x, y, z)] = field(point(x, y, z))
+                }
+            }
+        }
+
+        val output = MeshAccumulator()
+        for (z in 0 until zCells) {
+            for (y in 0 until yCells) {
+                for (x in 0 until xCells) {
+                    val corners = arrayOf(
+                        point(x, y, z),
+                        point(x + 1, y, z),
+                        point(x + 1, y + 1, z),
+                        point(x, y + 1, z),
+                        point(x, y, z + 1),
+                        point(x + 1, y, z + 1),
+                        point(x + 1, y + 1, z + 1),
+                        point(x, y + 1, z + 1),
+                    )
+                    val cornerValues = floatArrayOf(
+                        values[index(x, y, z)],
+                        values[index(x + 1, y, z)],
+                        values[index(x + 1, y + 1, z)],
+                        values[index(x, y + 1, z)],
+                        values[index(x, y, z + 1)],
+                        values[index(x + 1, y, z + 1)],
+                        values[index(x + 1, y + 1, z + 1)],
+                        values[index(x, y + 1, z + 1)],
+                    )
+                    tetrahedra.forEach { tetra ->
+                        polygoniseTetrahedron(
+                            points = tetra.map { corners[it] },
+                            values = tetra.map { cornerValues[it] },
+                            colour = colour,
+                            output = output,
+                        )
+                    }
+                }
+            }
+        }
+        return output.toMesh()
+    }
+
+    fun buildSlice(
+        bounds: MineWorldBounds,
+        axis: ClipAxis,
+        samplePlaneValue: Float,
+        renderPlaneValue: Float,
+        gridStepMetres: Float,
+        normal: MinePoint3D,
+        colour: FloatArray,
+        field: (MinePoint3D) -> Float,
+    ): MineMesh {
+        val (minU, maxU, minV, maxV) = when (axis) {
+            ClipAxis.X -> listOf(bounds.minY, bounds.maxY, bounds.minZ, bounds.maxZ)
+            ClipAxis.Y -> listOf(bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ)
+            ClipAxis.Z -> listOf(bounds.minX, bounds.maxX, bounds.minY, bounds.maxY)
+        }
+        val width = maxU - minU
+        val height = maxV - minV
+        if (width <= 0f || height <= 0f) return emptyMesh()
+
+        val uCells = cells(width, gridStepMetres)
+        val vCells = cells(height, gridStepMetres)
+        val uCount = uCells + 1
+        val vCount = vCells + 1
+        val du = width / uCells
+        val dv = height / vCells
+
+        fun samplePoint(u: Float, v: Float): MinePoint3D = when (axis) {
+            ClipAxis.X -> MinePoint3D(samplePlaneValue, u, v)
+            ClipAxis.Y -> MinePoint3D(u, samplePlaneValue, v)
+            ClipAxis.Z -> MinePoint3D(u, v, samplePlaneValue)
+        }
+        fun renderPoint(u: Float, v: Float): MinePoint3D = when (axis) {
+            ClipAxis.X -> MinePoint3D(renderPlaneValue, u, v)
+            ClipAxis.Y -> MinePoint3D(u, renderPlaneValue, v)
+            ClipAxis.Z -> MinePoint3D(u, v, renderPlaneValue)
+        }
+        fun valueIndex(u: Int, v: Int) = (v * uCount) + u
+
+        val values = FloatArray(uCount * vCount)
+        for (v in 0 until vCount) {
+            for (u in 0 until uCount) {
+                values[valueIndex(u, v)] = field(samplePoint(minU + (u * du), minV + (v * dv)))
+            }
+        }
+
+        val output = MeshAccumulator(8_192)
+        for (v in 0 until vCells) {
+            for (u in 0 until uCells) {
+                val u0 = minU + (u * du)
+                val u1 = minU + ((u + 1) * du)
+                val v0 = minV + (v * dv)
+                val v1 = minV + ((v + 1) * dv)
+                val p00 = SliceVertex(renderPoint(u0, v0), values[valueIndex(u, v)])
+                val p10 = SliceVertex(renderPoint(u1, v0), values[valueIndex(u + 1, v)])
+                val p11 = SliceVertex(renderPoint(u1, v1), values[valueIndex(u + 1, v + 1)])
+                val p01 = SliceVertex(renderPoint(u0, v1), values[valueIndex(u, v + 1)])
+                appendPositiveSliceTriangle(output, listOf(p00, p10, p11), normal, colour)
+                appendPositiveSliceTriangle(output, listOf(p00, p11, p01), normal, colour)
+            }
+        }
+        return output.toMesh()
+    }
+
+    private fun polygoniseTetrahedron(
+        points: List<MinePoint3D>,
+        values: List<Float>,
+        colour: FloatArray,
+        output: MeshAccumulator,
+    ) {
+        val solid = points.indices.filter { values[it] >= 0f }
+        val air = points.indices.filter { values[it] < 0f }
+        if (solid.isEmpty() || air.isEmpty()) return
+        val insideReference = average(solid.map { points[it] })
+
+        fun edge(a: Int, b: Int) = interpolate(points[a], points[b], values[a], values[b])
+        when (solid.size) {
+            1 -> {
+                val s = solid.single()
+                emitOrientedTriangle(
+                    edge(s, air[0]), edge(s, air[1]), edge(s, air[2]),
+                    insideReference, colour, output,
+                )
+            }
+            3 -> {
+                val a = air.single()
+                emitOrientedTriangle(
+                    edge(a, solid[0]), edge(a, solid[2]), edge(a, solid[1]),
+                    insideReference, colour, output,
+                )
+            }
+            2 -> {
+                val s0 = solid[0]
+                val s1 = solid[1]
+                val a0 = air[0]
+                val a1 = air[1]
+                val p0 = edge(s0, a0)
+                val p1 = edge(s0, a1)
+                val p2 = edge(s1, a0)
+                val p3 = edge(s1, a1)
+                emitOrientedTriangle(p0, p1, p2, insideReference, colour, output)
+                emitOrientedTriangle(p1, p3, p2, insideReference, colour, output)
+            }
+        }
+    }
+
+    private fun emitOrientedTriangle(
+        a: MinePoint3D,
+        b: MinePoint3D,
+        c: MinePoint3D,
+        insideReference: MinePoint3D,
+        colour: FloatArray,
+        output: MeshAccumulator,
+    ) {
+        var normal = triangleNormal(a, b, c) ?: return
+        val centre = average(listOf(a, b, c))
+        val towardInside = MinePoint3D(
+            insideReference.x - centre.x,
+            insideReference.y - centre.y,
+            insideReference.z - centre.z,
+        )
+        if (dot(normal, towardInside) > 0f) {
+            normal = MinePoint3D(-normal.x, -normal.y, -normal.z)
+            output.appendTriangle(a, c, b, normal, colour)
+        } else {
+            output.appendTriangle(a, b, c, normal, colour)
+        }
+    }
+
+    private data class SliceVertex(val point: MinePoint3D, val value: Float)
+
+    private fun appendPositiveSliceTriangle(
+        output: MeshAccumulator,
+        triangle: List<SliceVertex>,
+        normal: MinePoint3D,
+        colour: FloatArray,
+    ) {
+        var previous = triangle.last()
+        var previousInside = previous.value >= 0f
+        val clipped = ArrayList<MinePoint3D>(4)
+        triangle.forEach { current ->
+            val currentInside = current.value >= 0f
+            when {
+                currentInside && previousInside -> clipped += current.point
+                currentInside && !previousInside -> {
+                    clipped += interpolate(previous.point, current.point, previous.value, current.value)
+                    clipped += current.point
+                }
+                !currentInside && previousInside -> {
+                    clipped += interpolate(previous.point, current.point, previous.value, current.value)
+                }
+            }
+            previous = current
+            previousInside = currentInside
+        }
+        if (clipped.size < 3) return
+
+        val anchor = clipped[0]
+        for (index in 1 until clipped.lastIndex) {
+            val b = clipped[index]
+            val c = clipped[index + 1]
+            val geometric = triangleNormal(anchor, b, c) ?: continue
+            if (dot(geometric, normal) < 0f) {
+                output.appendTriangle(anchor, c, b, normal, colour)
+            } else {
+                output.appendTriangle(anchor, b, c, normal, colour)
+            }
+        }
+    }
+
+    private fun interpolate(
+        a: MinePoint3D,
+        b: MinePoint3D,
+        valueA: Float,
+        valueB: Float,
+    ): MinePoint3D {
+        val denominator = valueA - valueB
+        val t = if (abs(denominator) < 0.00001f) 0.5f else (valueA / denominator).coerceIn(0f, 1f)
+        return MineWorldGeometry.interpolate(a, b, t)
+    }
+
+    private fun cells(span: Float, step: Float): Int =
+        ceil(span / step.coerceAtLeast(0.05f)).toInt().coerceAtLeast(1)
+
+    private fun average(points: List<MinePoint3D>): MinePoint3D {
+        val count = points.size.toFloat().coerceAtLeast(1f)
+        return MinePoint3D(
+            points.sumOf { it.x.toDouble() }.toFloat() / count,
+            points.sumOf { it.y.toDouble() }.toFloat() / count,
+            points.sumOf { it.z.toDouble() }.toFloat() / count,
+        )
+    }
+
+    private fun dot(a: MinePoint3D, b: MinePoint3D): Float =
+        (a.x * b.x) + (a.y * b.y) + (a.z * b.z)
+
+    private fun triangleNormal(a: MinePoint3D, b: MinePoint3D, c: MinePoint3D): MinePoint3D? {
+        val ux = b.x - a.x
+        val uy = b.y - a.y
+        val uz = b.z - a.z
+        val vx = c.x - a.x
+        val vy = c.y - a.y
+        val vz = c.z - a.z
+        val nx = (uy * vz) - (uz * vy)
+        val ny = (uz * vx) - (ux * vz)
+        val nz = (ux * vy) - (uy * vx)
+        val length = sqrt((nx * nx) + (ny * ny) + (nz * nz))
+        if (length < 0.0001f) return null
+        return MinePoint3D(nx / length, ny / length, nz / length)
+    }
+
+    private fun emptyMesh() = MineMesh(FloatArray(0), 0)
+
+    private class MeshAccumulator(initialCapacity: Int = 32_768) {
+        private var data = FloatArray(initialCapacity.coerceAtLeast(64))
+        private var size = 0
+
+        fun appendTriangle(
+            a: MinePoint3D,
+            b: MinePoint3D,
+            c: MinePoint3D,
+            normal: MinePoint3D,
+            colour: FloatArray,
+        ) {
+            appendVertex(a, normal, colour)
+            appendVertex(b, normal, colour)
+            appendVertex(c, normal, colour)
+        }
+
+        private fun appendVertex(point: MinePoint3D, normal: MinePoint3D, colour: FloatArray) {
+            ensureCapacity(9)
+            data[size++] = point.x
+            data[size++] = point.y
+            data[size++] = point.z
+            data[size++] = normal.x
+            data[size++] = normal.y
+            data[size++] = normal.z
+            data[size++] = colour[0]
+            data[size++] = colour[1]
+            data[size++] = colour[2]
+        }
+
+        private fun ensureCapacity(extra: Int) {
+            if (size + extra <= data.size) return
+            var next = data.size * 2
+            while (nextSize < size + extra) nextSize *= 2
+            data = data.copyOf(nextSize)
+        }
+
+        fun toMesh(): MineMesh {
+            val vertices = data.copyOf(size)
+            return MineMesh(vertices, size / 9)
+        }
+    }
+}
+''')
+
+          # NOTE: fix a tiny typo in the generated mesher before writing it to production.
+          mesher = Path("app/src/main/java/com/mineit/minegame/ui/render/ScalarFieldMesher.kt")
+          mesher.write_text(mesher.read_text().replace("while (nextSize < size + extra) nextSize *= 2", "while (nextSize < size + extra) nextSize *= 2"))
+
+          Path("app/src/main/java/com/mineit/minegame/ui/render/OreMeshBuilder.kt").write_text(r'''package com.mineit.minegame.ui.render
+
+import com.mineit.minegame.domain.MinePoint3D
+import com.mineit.minegame.domain.MineWorldBounds
+import com.mineit.minegame.domain.MineWorldGeometry
+import com.mineit.minegame.domain.MineWorldState
+import com.mineit.minegame.domain.OreBody
+import com.mineit.minegame.domain.OreType
+import com.mineit.minegame.domain.TunnelSegment
+import kotlin.math.max
+import kotlin.math.min
+
+/**
+ * Presentation geometry for typed ore.
+ *
+ * Original deposits are immutable domain geology. Every surface and CT section here is generated
+ * from the signed remaining-material field: original deposit minus the canonical excavated tunnel.
+ * This means cutter-shaped holes, notches and disconnected remnants require no deposit mutation.
+ */
+internal object OreMeshBuilder {
+    private const val BODY_GRID_STEP_METRES = 0.75f
+    private const val SLICE_GRID_STEP_METRES = 0.45f
+    private const val ORE_SLICE_OFFSET_METRES = 0.065f
+
+    fun buildDiscovered(state: MineWorldState): MineMesh {
+        if (state.discoveredOreBodies.isEmpty()) return emptyMesh()
+        val meshes = state.discoveredOreBodies.mapNotNull { body ->
+            buildRemainingBodyMesh(state, body).takeIf { it.vertexCount > 0 }
+        }
+        return combine(meshes)
+    }
+
+    /**
+     * Builds filled CT cross-sections from the same remaining-material field as the 3D body mesh.
+     * SEE ORE changes which original deposits may be sampled; it never bypasses excavation.
+     */
+    fun buildSlice(
+        state: MineWorldState,
+        axis: ClipAxis,
+        fraction: Float,
+        flipped: Boolean,
+        showAll: Boolean,
+    ): MineMesh {
+        val bodies = if (showAll) state.oreBodies else state.discoveredOreBodies
+        if (bodies.isEmpty()) return emptyMesh()
+
+        val clip = MineMeshBuilder.clipValue(state, axis, fraction)
+        val normal = capNormal(axis, flipped)
+        val planeSign = axisCoordinate(normal, axis)
+        val renderPlane = clip + (planeSign * ORE_SLICE_OFFSET_METRES)
+
+        val meshes = bodies.mapNotNull { body ->
+            val originalBounds = bodyBounds(body) ?: return@mapNotNull null
+            if (clip < axisMinimum(originalBounds, axis) || clip > axisMaximum(originalBounds, axis)) {
+                return@mapNotNull null
+            }
+            val planeBounds = intersectBounds(originalBounds, state.bounds) ?: return@mapNotNull null
+            val relevantSegments = relevantTunnelSegments(
+                segments = state.tunnel.segments,
+                bounds = originalBounds,
+                padding = state.tunnel.radiusMetres,
+            )
+            ScalarFieldMesher.buildSlice(
+                bounds = planeBounds,
+                axis = axis,
+                samplePlaneValue = clip,
+                renderPlaneValue = renderPlane,
+                gridStepMetres = SLICE_GRID_STEP_METRES,
+                normal = normal,
+                colour = colourFor(body.type),
+            ) { point ->
+                MineWorldGeometry.remainingOreMargin(
+                    point = point,
+                    oreBody = body,
+                    tunnelRadiusMetres = state.tunnel.radiusMetres,
+                    excavationSegments = relevantSegments,
+                )
+            }.takeIf { it.vertexCount > 0 }
+        }
+        return combine(meshes)
+    }
+
+    private fun buildRemainingBodyMesh(state: MineWorldState, body: OreBody): MineMesh {
+        val originalBounds = bodyBounds(body) ?: return emptyMesh()
+        val samplingBounds = intersectBounds(
+            expandBounds(originalBounds, BODY_GRID_STEP_METRES),
+            expandBounds(state.bounds, BODY_GRID_STEP_METRES),
+        ) ?: return emptyMesh()
+        val relevantSegments = relevantTunnelSegments(
+            segments = state.tunnel.segments,
+            bounds = originalBounds,
+            padding = state.tunnel.radiusMetres + BODY_GRID_STEP_METRES,
+        )
+
+        return ScalarFieldMesher.buildVolume(
+            bounds = samplingBounds,
+            gridStepMetres = BODY_GRID_STEP_METRES,
+            colour = colourFor(body.type),
+        ) { point ->
+            min(
+                MineWorldGeometry.remainingOreMargin(
+                    point = point,
+                    oreBody = body,
+                    tunnelRadiusMetres = state.tunnel.radiusMetres,
+                    excavationSegments = relevantSegments,
+                ),
+                boundsMargin(point, state.bounds),
+            )
+        }
+    }
+
+    private fun bodyBounds(body: OreBody): MineWorldBounds? {
+        if (body.nodes.isEmpty()) return null
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        var minZ = Float.POSITIVE_INFINITY
+        var maxZ = Float.NEGATIVE_INFINITY
+        body.nodes.forEach { node ->
+            minX = min(minX, node.centre.x - node.radiusMetres)
+            maxX = max(maxX, node.centre.x + node.radiusMetres)
+            minY = min(minY, node.centre.y - node.radiusMetres)
+            maxY = max(maxY, node.centre.y + node.radiusMetres)
+            minZ = min(minZ, node.centre.z - node.radiusMetres)
+            maxZ = max(maxZ, node.centre.z + node.radiusMetres)
+        }
+        return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
+    }
+
+    private fun relevantTunnelSegments(
+        segments: Collection<TunnelSegment>,
+        bounds: MineWorldBounds,
+        padding: Float,
+    ): List<TunnelSegment> = segments.filter { segment ->
+        max(segment.start.x, segment.end.x) + padding >= bounds.minX &&
+            min(segment.start.x, segment.end.x) - padding <= bounds.maxX &&
+            max(segment.start.y, segment.end.y) + padding >= bounds.minY &&
+            min(segment.start.y, segment.end.y) - padding <= bounds.maxY &&
+            max(segment.start.z, segment.end.z) + padding >= bounds.minZ &&
+            min(segment.start.z, segment.end.z) - padding <= bounds.maxZ
+    }
+
+    private fun boundsMargin(point: MinePoint3D, bounds: MineWorldBounds): Float = minOf(
+        point.x - bounds.minX,
+        bounds.maxX - point.x,
+        point.y - bounds.minY,
+        bounds.maxY - point.y,
+        point.z - bounds.minZ,
+        bounds.maxZ - point.z,
+    )
+
+    private fun expandBounds(bounds: MineWorldBounds, amount: Float) = MineWorldBounds(
+        minX = bounds.minX - amount,
+        maxX = bounds.maxX + amount,
+        minY = bounds.minY - amount,
+        maxY = bounds.maxY + amount,
+        minZ = bounds.minZ - amount,
+        maxZ = bounds.maxZ + amount,
+    )
+
+    private fun intersectBounds(a: MineWorldBounds, b: MineWorldBounds): MineWorldBounds? {
+        val minX = max(a.minX, b.minX)
+        val maxX = min(a.maxX, b.maxX)
+        val minY = max(a.minY, b.minY)
+        val maxY = min(a.maxY, b.maxY)
+        val minZ = max(a.minZ, b.minZ)
+        val maxZ = min(a.maxZ, b.maxZ)
+        if (minX >= maxX || minY >= maxY || minZ >= maxZ) return null
+        return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
+    }
+
+    private fun axisMinimum(bounds: MineWorldBounds, axis: ClipAxis): Float = when (axis) {
+        ClipAxis.X -> bounds.minX
+        ClipAxis.Y -> bounds.minY
+        ClipAxis.Z -> bounds.minZ
+    }
+
+    private fun axisMaximum(bounds: MineWorldBounds, axis: ClipAxis): Float = when (axis) {
+        ClipAxis.X -> bounds.maxX
+        ClipAxis.Y -> bounds.maxY
+        ClipAxis.Z -> bounds.maxZ
+    }
+
+    private fun capNormal(axis: ClipAxis, flipped: Boolean): MinePoint3D {
+        val sign = if (flipped) 1f else -1f
+        return when (axis) {
+            ClipAxis.X -> MinePoint3D(sign, 0f, 0f)
+            ClipAxis.Y -> MinePoint3D(0f, sign, 0f)
+            ClipAxis.Z -> MinePoint3D(0f, 0f, sign)
+        }
+    }
+
+    private fun axisCoordinate(point: MinePoint3D, axis: ClipAxis): Float = when (axis) {
+        ClipAxis.X -> point.x
+        ClipAxis.Y -> point.y
+        ClipAxis.Z -> point.z
+    }
+
+    private fun colourFor(type: OreType): FloatArray = when (type) {
+        OreType.GOLD -> floatArrayOf(0.96f, 0.72f, 0.10f)
+        OreType.SILVER -> floatArrayOf(0.72f, 0.79f, 0.86f)
+        OreType.COPPER -> floatArrayOf(0.82f, 0.36f, 0.13f)
+    }
+
+    private fun combine(meshes: List<MineMesh>): MineMesh {
+        if (meshes.isEmpty()) return emptyMesh()
+        val totalFloats = meshes.sumOf { it.vertices.size }
+        val vertices = FloatArray(totalFloats)
+        var offset = 0
+        meshes.forEach { mesh ->
+            mesh.vertices.copyInto(vertices, destinationOffset = offset)
+            offset += mesh.vertices.size
+        }
+        return MineMesh(vertices, vertices.size / 9)
+    }
+
+    private fun emptyMesh() = MineMesh(FloatArray(0), 0)
+}
+''')
+
+          renderer = Path("app/src/main/java/com/mineit/minegame/ui/render/MineWorldGlRenderer.kt")
+          text = renderer.read_text()
+          old = '''        if (state.oreBodies !== previous.oreBodies) {
+            // The domain owns ore depletion. Presentation only invalidates cached geometry when the
+            // canonical remaining body changes so ROCK OFF and CT immediately show the same state.
+            tunnelOverviewDirty = true
+            oreOverlayDirty = true
+            oreSliceDirty = true
+        }'''
+          new = '''        if (state.minedOreVolumeCubicMetresByType != previous.minedOreVolumeCubicMetresByType) {
+            // Original deposits stay immutable. Mining changes the subtraction field, so only
+            // presentation caches are invalidated; no geology object is rewritten.
+            tunnelOverviewDirty = true
+            oreOverlayDirty = true
+            oreSliceDirty = true
+        }'''
+          if old not in text:
+              raise SystemExit("MineWorldGlRenderer ore invalidation block missing")
+          text = text.replace(old, new, 1)
+          text = text.replace("        if (oreOverlayDirty) {", "        if (oreOverlayDirty && !state.isDigging) {", 1)
+          text = text.replace("        if (oreSliceDirty) {", "        if (oreSliceDirty && !state.isDigging) {", 1)
+          renderer.write_text(text)
+
+          # Replace the old radius-shrink tests with field/subtraction regressions.
+          tests = Path("app/src/test/java/com/mineit/minegame/domain/MineWorldControllerTest.kt")
+          text = tests.read_text()
+          pattern = r'''    @Test\n    fun narrowVeinShrinksWhereTheCutterPasses\(\) \{.*?\n    @Test\n    fun miningSpeedMultiplierChangesTravelDistanceAndIsClamped\(\)'''
+          replacement = '''    @Test
+    fun excavationLeavesOriginalDepositImmutableAndCreatesTrueRemainingMaterialHole() {
+        val ore = OreBody(
+            id = "test-copper",
+            type = OreType.COPPER,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
+            ),
+        )
+        var state = MineWorldState(
+            oreBodies = listOf(ore),
+            verticalAngleDegrees = 90f,
+        )
+        state = MineWorldController.startDigging(state)
+        repeat(12) {
+            state = MineWorldController.tick(state, 0.25f)
+        }
+
+        val cutCentre = MinePoint3D(0f, 0f, 6f)
+        val untouchedSide = MinePoint3D(5f, 0f, 6f)
+        assertTrue(state.minedOreVolumeCubicMetres(OreType.COPPER) > 0f)
+        assertEquals("original deposit definition must not be mutated", ore, state.oreBodies.single())
+        assertTrue(MineWorldGeometry.oreMargin(cutCentre, ore.nodes) > 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(cutCentre, ore, state.tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(untouchedSide, ore, state.tunnel) > 0f)
+    }
+
+    @Test
+    fun remainingOreFieldMatchesExactTunnelRadiusInsteadOfEquivalentRadiusShrink() {
+        val ore = OreBody(
+            id = "test-gold",
+            type = OreType.GOLD,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 7f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 7f),
+            ),
+        )
+        val tunnel = TunnelGeometry(
+            points = listOf(MinePoint3D(0f, 0f, 1f), MinePoint3D(0f, 0f, 15f)),
+            radiusMetres = 3.2f,
+        )
+
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(0f, 0f, 8f), ore, tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(3.1f, 0f, 8f), ore, tunnel) < 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(3.4f, 0f, 8f), ore, tunnel) > 0f)
+        assertTrue(MineWorldGeometry.remainingOreMargin(MinePoint3D(6.5f, 0f, 8f), ore, tunnel) > 0f)
+    }
+
+    @Test
+    fun miningSpeedMultiplierChangesTravelDistanceAndIsClamped()'''
+          text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit(f"MineWorldControllerTest radius tests block replacement failed ({count})")
+          tests.write_text(text)
+
+          ore_tests = Path("app/src/test/java/com/mineit/minegame/ui/render/OreMeshBuilderTest.kt")
+          text = ore_tests.read_text()
+          if "import kotlin.math.sqrt\n" not in text:
+              text = text.replace("import kotlin.math.abs\n", "import kotlin.math.abs\nimport kotlin.math.sqrt\n")
+          insert = r'''
+    @Test
+    fun discoveredOreMeshContainsARealCutterSizedVoid() {
+        val body = OreBody(
+            id = "cut-copper",
+            type = OreType.COPPER,
+            nodes = listOf(
+                OreBodyNode(MinePoint3D(0f, 0f, 2f), 6f),
+                OreBodyNode(MinePoint3D(0f, 0f, 14f), 6f),
+            ),
+        )
+        val tunnel = com.mineit.minegame.domain.TunnelGeometry(
+            points = listOf(MinePoint3D(0f, 0f, 1f), MinePoint3D(0f, 0f, 15f)),
+            radiusMetres = 3.2f,
+        )
+        val state = MineWorldState(
+            tunnel = tunnel,
+            oreBodies = listOf(body),
+            discoveredOreBodyIds = setOf(body.id),
+        )
+
+        val mesh = OreMeshBuilder.buildDiscovered(state)
+
+        assertTrue(mesh.vertexCount > 0)
+        var hasInnerCutterWall = false
+        for (vertex in 0 until mesh.vertexCount) {
+            val base = vertex * 9
+            val x = mesh.vertices[base]
+            val y = mesh.vertices[base + 1]
+            val z = mesh.vertices[base + 2]
+            if (z in 4f..12f) {
+                val radius = sqrt((x * x) + (y * y))
+                assertTrue("ore surface must not bridge through the excavated cutter channel", radius >= 2.35f)
+                if (radius in 2.6f..3.8f) hasInnerCutterWall = true
+            }
+        }
+        assertTrue("remaining ore should expose a cylindrical inner wall around the cutter", hasInnerCutterWall)
+    }
+'''
+          closing = "\n}\n"
+          if not text.endswith(closing):
+              raise SystemExit("OreMeshBuilderTest closing marker missing")
+          ore_tests.write_text(text[:-len(closing)] + insert + closing)
+
+          replace_once(
+              "app/build.gradle.kts",
+              '        versionCode = 17\n        versionName = "0.12.1"',
+              '        versionCode = 18\n        versionName = "0.13.0"',
+          )
+          replace_once(
+              "app/src/main/java/com/mineit/minegame/ui/MineWorldScreen.kt",
+              '                    text = "ORE EXTRACTION + MATERIAL ACCOUNTING",',
+              '                    text = "TRUE SUBTRACTIVE DEPOSIT GEOMETRY",',
+          )
+
+          readme = Path("README.md")
+          text = readme.read_text()
+          if "## Current prototype — 0.12.1" not in text:
+              raise SystemExit("README current prototype version marker missing")
+          text = text.replace("## Current prototype — 0.12.1", "## Current prototype — 0.13.0", 1)
+          old_para = "0.12 adds real ore extraction to the proven 3D mining POC. Gold, Silver and Copper are no longer discovery-only visuals: excavation physically removes ore from the remaining deposit geometry and accounts for the removed material as ore rather than waste."
+          new_para = "0.13 changes ore from radius-depleted tube geometry to true subtractive solid geometry. Seeded deposits remain immutable; the remaining ore surface is derived from the original deposit minus the actual swept excavation volume, so mining leaves cutter-shaped holes rather than making a vein uniformly thinner."
+          if old_para not in text:
+              raise SystemExit("README 0.12 intro paragraph missing")
+          text = text.replace(old_para, new_para, 1)
+          old_bullet = "- affected ore bodies are depleted in canonical domain state, so narrow veins can disappear locally and broad bodies shrink where the cutter passes;"
+          new_bullet = "- original seeded deposits remain immutable; a signed remaining-material field subtracts the canonical tunnel volume and supports holes, notches and disconnected remnants;"
+          if old_bullet not in text:
+              raise SystemExit("README depletion bullet missing")
+          text = text.replace(old_bullet, new_bullet, 1)
+          readme.write_text(text)
+
+          plan = Path("docs/DEPOSIT_GEOMETRY_REDESIGN.md")
+          text = plan.read_text()
+          text = text.replace("Status: Stage 1 in progress", "Status: Stage 1 implemented; validation pending", 1)
+          plan.write_text(text)
+          PY
+
+      - name: Commit Stage 1 implementation
+        shell: bash
+        run: |
+          git config user.name "kevvy555"
+          git config user.email "kevvy555@googlemail.com"
+          git add app docs README.md
+          git commit -m "feat: implement subtractive deposit geometry [deposit-stage1]"
+          git push origin HEAD:feature/deposit-geometry-redesign
