@@ -1,11 +1,11 @@
 # Deposit Geometry Redesign
 
-Status: Stage 1 complete; Stage 2 implementation in progress
+Status: Stages 1 and 2 complete; Stage 3 next
 Branch: `feature/deposit-geometry-stage2`
 
 ## Why this exists
 
-The current ore prototype generates deposits as variable-radius tube paths. Mining then approximates depletion by shrinking the radius of touched stations. That is sufficient for discovery/accounting experiments but is not suitable for MineIT's long-term mining mechanic: a cutter must remove its actual swept 3D volume from a deposit, leaving persistent holes, notches, split remnants and repeated-pass geometry.
+The original ore prototype generated deposits as variable-radius tube paths. Mining then approximated depletion by shrinking the radius of touched stations. That was sufficient for discovery/accounting experiments but was not suitable for MineIT's long-term mining mechanic: a cutter must remove its actual swept 3D volume from a deposit, leaving persistent holes, notches, split remnants and repeated-pass geometry.
 
 The redesign separates four concepts:
 
@@ -46,9 +46,9 @@ Initial archetypes:
 - **Layered / stratiform body** — laterally extensive mineralised sheet/band, suitable for layered-intrusion style mineralisation.
 - **Disseminated / stockwork volume** — broad irregular mineralised zone, a strong initial Copper form and future home for grade variation.
 
-Deposit definitions should expose a common scalar/material query rather than requiring the renderer or mining controller to know their shape.
+Deposit definitions expose a common scalar/material query rather than requiring the renderer or mining controller to know their shape.
 
-The initial Gold/Silver/Copper mapping can be gameplay-oriented rather than claiming every real-world occurrence follows one form.
+The initial Gold/Silver/Copper mapping is gameplay-oriented rather than claiming every real-world occurrence follows one form.
 
 ### Stage 2 implementation contract
 
@@ -59,7 +59,7 @@ The shape abstraction is part of the domain model, not the renderer:
   - a signed material field `margin(point)` where positive means ore, zero is the original ore surface and negative means outside the body;
   - one conservative whole-body AABB for mining broad-phase culling;
   - one or more conservative local planning AABBs so the renderer can keep 12m ore-chunk scheduling local without knowing the archetype.
-- Mining classification, discovery, CT sampling, ROCK OFF rendering and remaining-ore meshing must call the common field. They must not switch on the archetype.
+- Mining classification, discovery, CT sampling, ROCK OFF rendering and remaining-ore meshing call the common field. They do not switch on the archetype.
 - The archetype-specific code is limited to immutable geometry definitions and seeded generation.
 - Remaining ore stays `min(originalDepositMargin, excavationMargin)`, so every Stage 2 body automatically inherits Stage 1 subtraction.
 
@@ -84,12 +84,13 @@ Initial parameter envelopes:
 
 Generation rules:
 
-- The same seed must reproduce the same Stage 2 geology within a given implementation/version.
-- Stage 2 does not need to preserve the exact old tube geometry for the existing seed; the old representation is being replaced deliberately.
-- Bodies must remain below the surface with a conservative minimum ore depth.
-- Strike/dip and shape parameters are generated once. Per-sample material queries must avoid collection allocation and avoid generating random values.
+- The same seed reproduces the same Stage 2 geology within a given implementation/version.
+- Stage 2 does not preserve the exact old tube geometry for the existing seed; the old representation is deliberately replaced.
+- Bodies remain below the surface with a conservative minimum ore depth.
+- Strike/dip, basis vectors, conservative bounds and local planning regions are generated/precomputed once per immutable deposit.
+- Per-sample material queries perform constant-cost arithmetic and do not generate random values or traverse deposit topology.
 - Conservative bounds must never cull real ore. False-positive broad-phase overlap is acceptable; false negatives are not.
-- Local planning bounds may overlap and may be conservative, but should avoid turning a long vein/layer into one large enclosing-box mesh queue.
+- Local planning bounds may overlap and may be conservative, but avoid turning a long vein/layer into one large enclosing-box mesh queue.
 - Disseminated/stockwork is a continuous mineralised volume in Stage 2. Sparse grade distribution belongs to Stage 4 rather than introducing holes that would falsely imply barren rock at this stage.
 
 Required regression coverage:
@@ -97,6 +98,7 @@ Required regression coverage:
 - Same seed produces structurally equal geology.
 - The default seed contains all four archetypes and two bodies of each ore commodity.
 - Representative inside/outside samples prove each archetype's field and conservative bounds.
+- Generated bodies obey the minimum ore depth.
 - The default starter path still discovers `gold-1`.
 - Mining accounting still partitions every newly removed sample exactly once.
 - A cutter pass through each archetype produces a true subtractive void while leaving adjacent ore intact.
@@ -108,9 +110,23 @@ Performance acceptance for Stage 2:
 - A material-field query is constant-cost with no topology traversal proportional to deposit length.
 - Mining continues to broad-phase by conservative body bounds before evaluating the field.
 - Render planning uses generic local planning bounds rather than archetype knowledge.
-- Stage 2 must not reintroduce the large ore-mesh queues or main-thread material-classification work removed in 0.13.3.
+- Stage 2 does not reintroduce the large ore-mesh queues or main-thread material-classification work removed in 0.13.3.
 
-Exit criteria: the default seed generates visibly distinct vein, lens, layered and disseminated bodies; the same Stage 1 excavation system cuts all four; mining/render code is shape-agnostic; required domain/render regressions and full Android CI pass.
+### Stage 2 completion — 0.14.0
+
+Stage 2 is implemented on `feature/deposit-geometry-stage2`:
+
+- the tube/node representation has been removed from canonical ore state;
+- all four archetypes implement the shared `OreDepositGeometry` field/bounds contract;
+- the six seeded POC bodies use the mapping above;
+- strike/dip basis, whole-body bounds and local planning bounds are precomputed per immutable geometry;
+- irregular lens/stockwork bodies use conservative padding so boundary noise cannot escape broad-phase bounds;
+- mining classification and discovery are shape-agnostic;
+- CT, discovered-ore meshes, ROCK OFF and tunnel-wall ore colouring read the same domain material field;
+- ore chunk planning consumes generic local planning bounds rather than tube segments;
+- regression coverage proves deterministic generation, all four archetypes, minimum depth, starter discovery, accounting, broad-phase culling, local chunking and cutter subtraction across every archetype.
+
+Exit criteria: satisfied once the final 0.14.0 Android CI run is green. Stage 3 is the next planned geology step.
 
 ## Stage 3 — Lightweight host-rock geology
 
