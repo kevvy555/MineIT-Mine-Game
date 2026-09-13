@@ -1,7 +1,5 @@
 package com.mineit.minegame.domain
 
-import kotlin.math.PI
-import kotlin.math.acos
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -18,8 +16,6 @@ data class ExcavationMaterialBreakdown(
 
 object MineWorldGeometry {
     private const val MATERIAL_SAMPLE_SPACING_METRES = 0.45f
-    private const val DEPLETION_NODE_SPACING_METRES = 0.9f
-    private const val MIN_REMAINING_ORE_RADIUS_METRES = 0.03f
 
     fun distance(a: MinePoint3D, b: MinePoint3D): Float {
         val dx = a.x - b.x
@@ -51,6 +47,31 @@ object MineWorldGeometry {
         }
         return best
     }
+
+    /**
+     * Signed remaining-ore field. Positive is solid ore, zero is its current surface and negative
+     * is outside the original deposit or inside already excavated space.
+     */
+    fun remainingOreMargin(
+        point: MinePoint3D,
+        oreBody: OreBody,
+        tunnelRadiusMetres: Float,
+        excavationSegments: Collection<TunnelSegment>,
+    ): Float = min(
+        oreMargin(point, oreBody.nodes),
+        distanceToTunnelSegments(point, excavationSegments) - tunnelRadiusMetres,
+    )
+
+    fun remainingOreMargin(
+        point: MinePoint3D,
+        oreBody: OreBody,
+        tunnel: TunnelGeometry,
+    ): Float = remainingOreMargin(
+        point = point,
+        oreBody = oreBody,
+        tunnelRadiusMetres = tunnel.radiusMetres,
+        excavationSegments = tunnel.segments,
+    )
 
     fun solidMargin(
         point: MinePoint3D,
@@ -210,65 +231,6 @@ object MineWorldGeometry {
         )
     }
 
-    /**
-     * Applies excavation to the canonical remaining ore geometry.
-     *
-     * A touched body is densified locally enough for a short cutter segment to affect the correct
-     * part of the vein. At each affected station the overlapping circular area is removed and the
-     * remainder is represented by an equivalent smaller radius. This is deliberately lightweight:
-     * narrow veins can disappear completely, while broad bodies survive with a reduced section.
-     */
-    fun depleteOreBodies(
-        oreBodies: List<OreBody>,
-        start: MinePoint3D,
-        end: MinePoint3D,
-        tunnelRadiusMetres: Float,
-        minedBodyIds: Set<String>,
-    ): List<OreBody> {
-        if (minedBodyIds.isEmpty()) return oreBodies
-
-        return oreBodies.map { body ->
-            if (body.id !in minedBodyIds || body.nodes.size < 2) {
-                body
-            } else {
-                val densified = densifyOreNodes(body.nodes, DEPLETION_NODE_SPACING_METRES)
-                val depleted = densified.map { node ->
-                    val projection = projectionParameter(node.centre, start, end)
-                    if (projection < 0f || projection > 1f || node.radiusMetres <= 0f) {
-                        node
-                    } else {
-                        val axisPoint = interpolate(start, end, projection)
-                        val axisDistance = distance(node.centre, axisPoint)
-                        val removedArea = circleIntersectionArea(
-                            firstRadius = node.radiusMetres,
-                            secondRadius = tunnelRadiusMetres,
-                            centreDistance = axisDistance,
-                        )
-                        if (removedArea <= 0f) {
-                            node
-                        } else {
-                            val originalArea = (PI * node.radiusMetres * node.radiusMetres).toFloat()
-                            val remainingArea = (originalArea - removedArea).coerceAtLeast(0f)
-                            val remainingRadius = if (remainingArea <= 0f) {
-                                0f
-                            } else {
-                                sqrt((remainingArea / PI).toFloat())
-                            }
-                            node.copy(
-                                radiusMetres = if (remainingRadius < MIN_REMAINING_ORE_RADIUS_METRES) {
-                                    0f
-                                } else {
-                                    remainingRadius
-                                },
-                            )
-                        }
-                    }
-                }
-                body.copy(nodes = depleted)
-            }
-        }
-    }
-
     fun exposedOreSegments(
         tunnel: TunnelGeometry,
         oreBody: List<OreBodyNode>,
@@ -332,29 +294,6 @@ object MineWorldGeometry {
         z = start.z + ((end.z - start.z) * t),
     )
 
-    private fun densifyOreNodes(
-        nodes: List<OreBodyNode>,
-        spacingMetres: Float,
-    ): List<OreBodyNode> {
-        if (nodes.size < 2) return nodes
-        val output = ArrayList<OreBodyNode>()
-        output += nodes.first()
-
-        nodes.zipWithNext().forEach { (start, end) ->
-            val length = distance(start.centre, end.centre)
-            val steps = max(1, ceil(length / spacingMetres).toInt())
-            for (step in 1..steps) {
-                val t = step.toFloat() / steps.toFloat()
-                output += OreBodyNode(
-                    centre = interpolate(start.centre, end.centre, t),
-                    radiusMetres = start.radiusMetres +
-                        ((end.radiusMetres - start.radiusMetres) * t),
-                )
-            }
-        }
-        return output
-    }
-
     private fun isInsideFiniteCylinder(
         point: MinePoint3D,
         segment: TunnelSegment,
@@ -379,45 +318,6 @@ object MineWorldGeometry {
             min(firstStart.y, firstEnd.y) - padding <= max(secondStart.y, secondEnd.y) &&
             max(firstStart.z, firstEnd.z) + padding >= min(secondStart.z, secondEnd.z) &&
             min(firstStart.z, firstEnd.z) - padding <= max(secondStart.z, secondEnd.z)
-
-    private fun circleIntersectionArea(
-        firstRadius: Float,
-        secondRadius: Float,
-        centreDistance: Float,
-    ): Float {
-        if (firstRadius <= 0f || secondRadius <= 0f) return 0f
-        if (centreDistance >= firstRadius + secondRadius) return 0f
-
-        val smaller = min(firstRadius, secondRadius)
-        if (centreDistance <= kotlin.math.abs(firstRadius - secondRadius)) {
-            return (PI * smaller * smaller).toFloat()
-        }
-
-        val r1 = firstRadius.toDouble()
-        val r2 = secondRadius.toDouble()
-        val d = centreDistance.toDouble().coerceAtLeast(0.000001)
-        val firstAngle = acos(
-            (((d * d) + (r1 * r1) - (r2 * r2)) / (2.0 * d * r1))
-                .coerceIn(-1.0, 1.0),
-        )
-        val secondAngle = acos(
-            (((d * d) + (r2 * r2) - (r1 * r1)) / (2.0 * d * r2))
-                .coerceIn(-1.0, 1.0),
-        )
-        val product = (
-            (-d + r1 + r2) *
-                (d + r1 - r2) *
-                (d - r1 + r2) *
-                (d + r1 + r2)
-            ).coerceAtLeast(0.0)
-        val triangleAreaTwice = sqrt(product)
-
-        return (
-            (r1 * r1 * firstAngle) +
-                (r2 * r2 * secondAngle) -
-                (0.5 * triangleAreaTwice)
-            ).toFloat()
-    }
 
     private fun closestParameter(
         point: MinePoint3D,

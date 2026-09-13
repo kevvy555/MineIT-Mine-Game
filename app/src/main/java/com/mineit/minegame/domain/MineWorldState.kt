@@ -108,9 +108,8 @@ data class MineWorldState(
         get() = oreBodies.filter { it.id in discoveredOreBodyIds }
 
     /**
-     * The detailed tunnel-wall renderer still asks for one body when colouring the wall. Typed
-     * [oreBodies] remain canonical; because they are depleted by excavation this view also reflects
-     * the remaining material rather than the original seeded body.
+     * Compatibility view used by the tunnel-wall colour pass. [oreBodies] are immutable original
+     * geology; remaining material is derived by subtracting excavation via MineWorldGeometry.
      */
     val oreBody: List<OreBodyNode>
         get() = discoveredOreBodies.firstOrNull()?.nodes.orEmpty()
