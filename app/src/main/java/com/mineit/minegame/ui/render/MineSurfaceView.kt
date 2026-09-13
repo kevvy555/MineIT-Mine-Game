@@ -10,6 +10,7 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
     private val mineRenderer = MineWorldGlRenderer()
     private var lastX = 0f
     private var lastY = 0f
+    private var orbitGestureMode = OrbitGestureMode.ROTATE
     private var performanceListener: ((RenderPerformanceStats) -> Unit)? = null
 
     private val scaleDetector = ScaleGestureDetector(
@@ -51,8 +52,16 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         mineRenderer.setCameraMode(mode)
     }
 
+    fun setOrbitGestureMode(mode: OrbitGestureMode) {
+        orbitGestureMode = mode
+    }
+
     fun setRockVisible(visible: Boolean) {
         mineRenderer.setRockVisible(visible)
+    }
+
+    fun setSeeOre(enabled: Boolean) {
+        mineRenderer.setSeeOre(enabled)
     }
 
     fun setPerformanceListener(listener: ((RenderPerformanceStats) -> Unit)?) {
@@ -76,7 +85,10 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
                 if (event.pointerCount == 1 && !scaleDetector.isInProgress) {
                     val dx = event.x - lastX
                     val dy = event.y - lastY
-                    mineRenderer.rotate(dx, dy)
+                    when (orbitGestureMode) {
+                        OrbitGestureMode.ROTATE -> mineRenderer.rotate(dx, dy)
+                        OrbitGestureMode.PAN -> mineRenderer.pan(dx, dy)
+                    }
                 }
                 lastX = event.x
                 lastY = event.y
