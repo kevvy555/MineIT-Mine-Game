@@ -21,13 +21,21 @@ internal data class RenderPerformanceStats(
     val framesPerSecond: Int = 0,
     val frameTimeMs: Float = 0f,
     val lastChunkBuildMs: Float = 0f,
+    val lastOreChunkBuildMs: Float = 0f,
+    val peakChunkBuildMs: Float = 0f,
+    val peakOreChunkBuildMs: Float = 0f,
     val lastCapBuildMs: Float = 0f,
     val lastUploadMs: Float = 0f,
     val triangleCount: Int = 0,
+    val oreTriangleCount: Int = 0,
     val cachedChunks: Int = 0,
+    val cachedOreChunks: Int = 0,
     val chunksRebuilt: Int = 0,
+    val oreChunksRebuilt: Int = 0,
     val queuedChunks: Int = 0,
+    val queuedOreChunks: Int = 0,
     val meshWorkerBusy: Boolean = false,
+    val oreWorkerBusy: Boolean = false,
     val capWorkerBusy: Boolean = false,
 )
 
@@ -70,7 +78,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var sliceDirty = true
 
     @Volatile
-    private var oreOverlayDirty = true
+    private var oreCacheDirty = true
 
     @Volatile
     private var oreSliceDirty = true
@@ -122,6 +130,11 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private val appliedChunkRevisions = mutableMapOf<ChunkKey, Long>()
     private val chunksTouchedDuringDigging = linkedSetOf<ChunkKey>()
     private val activeDirtyChunks = linkedSetOf<ChunkKey>()
+    private val oreChunkMeshes = linkedMapOf<OreChunkKey, GlMesh?>()
+    private val pendingOreChunkBuilds = linkedSetOf<OreChunkKey>()
+    private val oreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+    private val appliedOreChunkRevisions = mutableMapOf<OreChunkKey, Long>()
+    private val oreChunksTouchedDuringDigging = linkedSetOf<OreChunkKey>()
     private var activeSliceDirty = false
     private var lastActiveRemeshPoint: MinePoint3D? = null
     private var processedState: MineWorldState? = null
@@ -133,7 +146,6 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var tunnelOverviewMesh: GlMesh? = null
     private var grassMesh: GlMesh? = null
     private var worldShellMesh: GlMesh? = null
-    private var oreOverlayMesh: GlMesh? = null
 
     private val modelMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -157,9 +169,13 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var statsWindowStartNanos = System.nanoTime()
     private var framesInStatsWindow = 0
     private var lastChunkBuildMs = 0f
+    private var lastOreChunkBuildMs = 0f
+    private var peakChunkBuildMs = 0f
+    private var peakOreChunkBuildMs = 0f
     private var lastCapBuildMs = 0f
     private var lastUploadMs = 0f
     private var chunksRebuiltSinceStats = 0
+    private var oreChunksRebuiltSinceStats = 0
 
     fun setWorldState(state: MineWorldState) {
         val previous = worldState
@@ -185,19 +201,19 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             worldShellDirty = true
             grassDirty = true
             sliceDirty = true
-            oreOverlayDirty = true
+            oreCacheDirty = true
             oreSliceDirty = true
         }
         if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
             sliceDirty = true
             tunnelOverviewDirty = true
-            oreOverlayDirty = true
+            oreCacheDirty = true
             oreSliceDirty = true
         }
         if (state.minedOreVolumeCubicMetresByType != previous.minedOreVolumeCubicMetresByType) {
-            // Original deposits stay immutable; mining changes only the subtraction field.
+            // Original deposits stay immutable; local ore chunks are invalidated from new cutter
+            // segments in processWorldChanges rather than forcing a whole-deposit rebuild.
             tunnelOverviewDirty = true
-            oreOverlayDirty = true
             oreSliceDirty = true
         }
     }
@@ -301,6 +317,11 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         appliedChunkRevisions.clear()
         chunksTouchedDuringDigging.clear()
         activeDirtyChunks.clear()
+        oreChunkMeshes.clear()
+        pendingOreChunkBuilds.clear()
+        oreChunkRevisions.clear()
+        appliedOreChunkRevisions.clear()
+        oreChunksTouchedDuringDigging.clear()
         activeSliceDirty = false
         lastActiveRemeshPoint = null
         processedState = null
@@ -310,17 +331,20 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         tunnelOverviewMesh = null
         grassMesh = null
         worldShellMesh = null
-        oreOverlayMesh = null
         pipelineGeneration += 1L
         machineDirty = true
         tunnelOverviewDirty = true
         grassDirty = true
         worldShellDirty = true
         sliceDirty = true
-        oreOverlayDirty = true
+        oreCacheDirty = true
         oreSliceDirty = true
         statsWindowStartNanos = System.nanoTime()
         framesInStatsWindow = 0
+        lastOreChunkBuildMs = 0f
+        peakChunkBuildMs = 0f
+        peakOreChunkBuildMs = 0f
+        oreChunksRebuiltSinceStats = 0
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -332,8 +356,11 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     override fun onDrawFrame(gl: GL10?) {
         val state = worldState
         processWorldChanges(state)
+        queueOreRebuildsIfNeeded(state)
         consumeCompletedChunkBuilds()
+        consumeCompletedOreChunkBuilds()
         scheduleNextChunkBuilds(state)
+        scheduleNextOreChunkBuild(state)
         rebuildImmediateMeshesIfNeeded(state)
 
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
@@ -369,10 +396,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
 
         // Discovered connected bodies stay opaque and obey both geological bounds and every active
         // cut plane. SEE ORE never turns these into an x-ray overlay.
-        if (oreOverlayMesh != null) {
+        if (oreChunkMeshes.isNotEmpty()) {
             applyBoundsClip(state, enabled = true)
             applyClipUniforms(state, enabled = showCutaway)
-            drawMesh(oreOverlayMesh)
+            oreChunkMeshes.values.forEach(::drawMesh)
             applyBoundsClip(state, enabled = false)
         }
 
@@ -422,6 +449,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         if (!previous.isDigging && state.isDigging) {
             chunksTouchedDuringDigging.clear()
             activeDirtyChunks.clear()
+            oreChunksTouchedDuringDigging.clear()
             activeSliceDirty = false
             lastActiveRemeshPoint = state.tunnel.end
         }
@@ -438,7 +466,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             worldShellDirty = true
             grassDirty = true
             sliceDirty = true
-            oreOverlayDirty = true
+            oreCacheDirty = true
             oreSliceDirty = true
         }
 
@@ -460,6 +488,15 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 if (state.isDigging || previous.isDigging) {
                     chunksTouchedDuringDigging += affected
                 }
+                state.discoveredOreBodies.forEach { body ->
+                    oreChunksTouchedDuringDigging += OreChunkPlanner.affectedChunks(
+                        segment = segment,
+                        tunnelRadiusMetres = state.tunnel.radiusMetres,
+                        body = body,
+                        worldBounds = state.bounds,
+                        extraPaddingMetres = OreMeshBuilder.BODY_GRID_STEP_METRES,
+                    )
+                }
 
                 if (segmentTouchesAnyActiveSlice(state, segment)) {
                     activeSliceDirty = true
@@ -478,14 +515,21 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             }
             chunksTouchedDuringDigging.clear()
             activeDirtyChunks.clear()
+            oreChunksTouchedDuringDigging.forEach(::markOreChunkForBuild)
+            oreChunksTouchedDuringDigging.clear()
             activeSliceDirty = false
             lastActiveRemeshPoint = null
         }
 
         if (state.discoveredOreBodyIds != previous.discoveredOreBodyIds) {
             sliceDirty = true
-            oreOverlayDirty = true
             oreSliceDirty = true
+            val newlyDiscovered = state.discoveredOreBodyIds - previous.discoveredOreBodyIds
+            state.oreBodies
+                .filter { it.id in newlyDiscovered }
+                .forEach { body ->
+                    OreChunkPlanner.chunksForBody(body, state.bounds).forEach(::markOreChunkForBuild)
+                }
         }
 
         processedState = state
@@ -530,6 +574,12 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         appliedChunkRevisions.clear()
         chunksTouchedDuringDigging.clear()
         activeDirtyChunks.clear()
+        oreChunkMeshes.values.forEach(::deleteMesh)
+        oreChunkMeshes.clear()
+        pendingOreChunkBuilds.clear()
+        oreChunkRevisions.clear()
+        appliedOreChunkRevisions.clear()
+        oreChunksTouchedDuringDigging.clear()
         activeSliceDirty = false
 
         state.tunnel.segments.forEach { segment -> indexSegment(state, segment) }
@@ -545,7 +595,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         grassDirty = true
         worldShellDirty = true
         sliceDirty = true
-        oreOverlayDirty = true
+        oreCacheDirty = true
         oreSliceDirty = true
     }
 
@@ -601,8 +651,67 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             deleteMesh(previous?.mesh)
             appliedChunkRevisions[result.key] = result.revision
             lastChunkBuildMs = result.buildMs
+            peakChunkBuildMs = max(peakChunkBuildMs, result.buildMs)
             chunksRebuiltSinceStats += 1
         }
+    }
+
+    private fun queueOreRebuildsIfNeeded(state: MineWorldState) {
+        if (!oreCacheDirty || state.isDigging) return
+        state.discoveredOreBodies.forEach { body ->
+            OreChunkPlanner.chunksForBody(body, state.bounds).forEach(::markOreChunkForBuild)
+        }
+        oreCacheDirty = false
+    }
+
+    private fun markOreChunkForBuild(key: OreChunkKey) {
+        pendingOreChunkBuilds += key
+        oreChunkRevisions[key] = (oreChunkRevisions[key] ?: 0L) + 1L
+    }
+
+    private fun consumeCompletedOreChunkBuilds() {
+        while (true) {
+            val result = meshBuildCoordinator.pollOreChunk() ?: break
+            if (result.pipelineGeneration != pipelineGeneration) continue
+            val currentRevision = oreChunkRevisions[result.key] ?: continue
+            if (result.revision != currentRevision) continue
+            val appliedRevision = appliedOreChunkRevisions[result.key] ?: 0L
+            if (result.revision <= appliedRevision) continue
+
+            val uploadStart = System.nanoTime()
+            val uploaded = uploadMesh(result.mesh)
+            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
+            val previous = oreChunkMeshes.put(result.key, uploaded)
+            deleteMesh(previous)
+            appliedOreChunkRevisions[result.key] = result.revision
+            lastOreChunkBuildMs = result.buildMs
+            peakOreChunkBuildMs = max(peakOreChunkBuildMs, result.buildMs)
+            oreChunksRebuiltSinceStats += 1
+        }
+    }
+
+    private fun scheduleNextOreChunkBuild(state: MineWorldState) {
+        if (state.isDigging || pendingOreChunkBuilds.isEmpty() || meshBuildCoordinator.availableOreSlots() <= 0) return
+        val key = pendingOreChunkBuilds.minByOrNull { candidate ->
+            MineWorldGeometry.distance(OreChunkPlanner.chunkCentre(candidate), state.tunnel.end)
+        } ?: return
+        val body = state.oreBodies.firstOrNull { it.id == key.bodyId }
+        if (body == null || key !in OreChunkPlanner.chunksForBody(body, state.bounds)) {
+            pendingOreChunkBuilds.remove(key)
+            return
+        }
+        val revision = oreChunkRevisions[key] ?: return
+        val accepted = meshBuildCoordinator.trySubmitOreChunk(
+            OreChunkBuildRequest(
+                pipelineGeneration = pipelineGeneration,
+                revision = revision,
+                key = key,
+                state = state,
+                body = body,
+                gridStepMetres = OreMeshBuilder.BODY_GRID_STEP_METRES,
+            ),
+        )
+        if (accepted) pendingOreChunkBuilds.remove(key)
     }
 
     private fun scheduleNextChunkBuilds(state: MineWorldState) {
@@ -678,15 +787,6 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             deleteMesh(tunnelOverviewMesh)
             tunnelOverviewMesh = uploaded
             tunnelOverviewDirty = false
-        }
-
-        if (oreOverlayDirty && !state.isDigging) {
-            val uploadStart = System.nanoTime()
-            val uploaded = uploadMesh(OreMeshBuilder.buildDiscovered(state))
-            lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
-            deleteMesh(oreOverlayMesh)
-            oreOverlayMesh = uploaded
-            oreOverlayDirty = false
         }
 
         if (oreSliceDirty && !state.isDigging) {
@@ -1005,7 +1105,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 0
             }) + (grassMesh?.vertexCount ?: 0)
         }
-        val oreVertices = (oreOverlayMesh?.vertexCount ?: 0) +
+        val oreVertices = oreChunkMeshes.values.sumOf { it?.vertexCount ?: 0 } +
             (if (showCutaway) oreSliceMeshes.values.sumOf { it?.vertexCount ?: 0 } else 0)
         val machineCopies = if (cameraMode == CameraMode.ORBIT) 2 else 0
         val totalVertices = worldVertices + oreVertices + ((machineMesh?.vertexCount ?: 0) * machineCopies)
@@ -1014,19 +1114,28 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 framesPerSecond = fps,
                 frameTimeMs = if (fps > 0) 1000f / fps.toFloat() else 0f,
                 lastChunkBuildMs = lastChunkBuildMs,
+                lastOreChunkBuildMs = lastOreChunkBuildMs,
+                peakChunkBuildMs = peakChunkBuildMs,
+                peakOreChunkBuildMs = peakOreChunkBuildMs,
                 lastCapBuildMs = lastCapBuildMs,
                 lastUploadMs = lastUploadMs,
                 triangleCount = totalVertices / 3,
+                oreTriangleCount = oreVertices / 3,
                 cachedChunks = chunkMeshes.size,
+                cachedOreChunks = oreChunkMeshes.values.count { it != null },
                 chunksRebuilt = chunksRebuiltSinceStats,
+                oreChunksRebuilt = oreChunksRebuiltSinceStats,
                 queuedChunks = pendingChunkBuilds.size,
+                queuedOreChunks = pendingOreChunkBuilds.size,
                 meshWorkerBusy = meshBuildCoordinator.isChunkBusy(),
+                oreWorkerBusy = meshBuildCoordinator.isOreBusy(),
                 capWorkerBusy = false,
             ),
         )
         framesInStatsWindow = 0
         statsWindowStartNanos = now
         chunksRebuiltSinceStats = 0
+        oreChunksRebuiltSinceStats = 0
     }
 
     private fun createProgram(vertexSource: String, fragmentSource: String): Int {
