@@ -39,6 +39,12 @@ object OreGeologyGenerator {
         val verticalJitterDegrees: Float,
     )
 
+    private data class StarterBody(
+        val centre: MinePoint3D,
+        val headingDegrees: Float,
+        val verticalDegrees: Float,
+    )
+
     private val profiles = listOf(
         Profile(OreType.GOLD, 2, 8, 12, 7f, 11f, 1.2f, 2.8f, 30f, 18f),
         Profile(OreType.SILVER, 2, 8, 13, 8f, 13f, 2.3f, 4.6f, 22f, 14f),
@@ -57,23 +63,21 @@ object OreGeologyGenerator {
     }
 
     private fun generateBody(profile: Profile, index: Int, random: Random): OreBody {
-        val starterGold = profile.type == OreType.GOLD && index == 0
+        val starter = if (index == 0) starterFor(profile.type) else null
         val nodeCount = random.nextInt(profile.minNodes, profile.maxNodes + 1)
-        var headingDegrees = if (starterGold) 25f else random.nextFloat(0f, 360f)
-        var verticalDegrees = if (starterGold) 50f else random.nextFloat(-18f, 58f)
-        var point = if (starterGold) {
+        var headingDegrees = starter?.headingDegrees ?: random.nextFloat(0f, 360f)
+        var verticalDegrees = starter?.verticalDegrees ?: random.nextFloat(-18f, 58f)
+        var point = starter?.centre?.let { centre ->
             MinePoint3D(
-                x = 11f + random.nextFloat(-1.2f, 1.2f),
-                y = 5f + random.nextFloat(-1.2f, 1.2f),
-                z = 17f + random.nextFloat(-1.5f, 1.5f),
+                x = centre.x + random.nextFloat(-1.2f, 1.2f),
+                y = centre.y + random.nextFloat(-1.2f, 1.2f),
+                z = centre.z + random.nextFloat(-1.5f, 1.5f),
             )
-        } else {
-            MinePoint3D(
-                x = random.nextFloat(-90f, 90f),
-                y = random.nextFloat(-90f, 90f),
-                z = random.nextFloat(18f, 135f),
-            )
-        }
+        } ?: MinePoint3D(
+            x = random.nextFloat(-90f, 90f),
+            y = random.nextFloat(-90f, 90f),
+            z = random.nextFloat(18f, 135f),
+        )
 
         val nodes = ArrayList<OreBodyNode>(nodeCount)
         repeat(nodeCount) { nodeIndex ->
@@ -111,6 +115,14 @@ object OreGeologyGenerator {
             type = profile.type,
             nodes = nodes,
         )
+    }
+
+    private fun starterFor(type: OreType): StarterBody = when (type) {
+        // Gold remains close to the default excavation path so discovery is easy to verify.
+        OreType.GOLD -> StarterBody(MinePoint3D(11f, 5f, 17f), 25f, 50f)
+        // Silver and copper intersect the initial geological block but sit away from that path.
+        OreType.SILVER -> StarterBody(MinePoint3D(-12f, 9f, 27f), 118f, 22f)
+        OreType.COPPER -> StarterBody(MinePoint3D(7f, -13f, 36f), 305f, 12f)
     }
 
     private fun Random.nextFloat(minimum: Float, maximum: Float): Float =
