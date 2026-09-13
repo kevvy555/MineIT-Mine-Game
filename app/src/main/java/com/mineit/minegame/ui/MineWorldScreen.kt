@@ -68,6 +68,7 @@ fun MineWorldScreen(
     var selectedSliceAxis by remember { mutableStateOf(ClipAxis.X) }
     var sliceConfiguration by remember { mutableStateOf(SliceConfiguration()) }
     var rockVisible by remember { mutableStateOf(true) }
+    var tunnelVisible by remember { mutableStateOf(true) }
     var followDigger by remember { mutableStateOf(false) }
     var cameraMode by remember { mutableStateOf(CameraMode.ORBIT) }
     var orbitGestureMode by remember { mutableStateOf(OrbitGestureMode.ROTATE) }
@@ -129,6 +130,7 @@ fun MineWorldScreen(
                         view.setWorldState(state)
                         view.setSlices(sliceConfiguration)
                         view.setRockVisible(rockVisible)
+                        view.setTunnelVisible(tunnelVisible)
                         view.setFollowDigger(followDigger)
                         view.setCameraMode(cameraMode)
                         view.setOrbitGestureMode(orbitGestureMode)
@@ -139,6 +141,7 @@ fun MineWorldScreen(
                     view.setWorldState(state)
                     view.setSlices(sliceConfiguration)
                     view.setRockVisible(rockVisible)
+                    view.setTunnelVisible(tunnelVisible)
                     view.setFollowDigger(followDigger)
                     view.setCameraMode(cameraMode)
                     view.setOrbitGestureMode(orbitGestureMode)
@@ -164,6 +167,7 @@ fun MineWorldScreen(
             selectedSliceAxis = selectedSliceAxis,
             sliceConfiguration = sliceConfiguration,
             rockVisible = rockVisible,
+            tunnelVisible = tunnelVisible,
             followDigger = followDigger,
             cameraMode = cameraMode,
             orbitGestureMode = orbitGestureMode,
@@ -181,6 +185,7 @@ fun MineWorldScreen(
                 sliceConfiguration = sliceConfiguration.toggleAxis(selectedSliceAxis)
             },
             onToggleRock = { rockVisible = !rockVisible },
+            onToggleTunnel = { tunnelVisible = !tunnelVisible },
             onToggleFollow = { followDigger = !followDigger },
             onCameraModeChange = { cameraMode = it },
             onOrbitGestureModeChange = { orbitGestureMode = it },
@@ -294,6 +299,7 @@ private fun MineWorldControls(
     selectedSliceAxis: ClipAxis,
     sliceConfiguration: SliceConfiguration,
     rockVisible: Boolean,
+    tunnelVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
     orbitGestureMode: OrbitGestureMode,
@@ -305,6 +311,7 @@ private fun MineWorldControls(
     onFlipSlice: () -> Unit,
     onToggleSelectedSlice: () -> Unit,
     onToggleRock: () -> Unit,
+    onToggleTunnel: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
     onOrbitGestureModeChange: (OrbitGestureMode) -> Unit,
@@ -342,6 +349,7 @@ private fun MineWorldControls(
                 selectedSliceAxis = selectedSliceAxis,
                 sliceConfiguration = sliceConfiguration,
                 rockVisible = rockVisible,
+                tunnelVisible = tunnelVisible,
                 followDigger = followDigger,
                 cameraMode = cameraMode,
                 orbitGestureMode = orbitGestureMode,
@@ -351,6 +359,7 @@ private fun MineWorldControls(
                 onFlipSlice = onFlipSlice,
                 onToggleSelectedSlice = onToggleSelectedSlice,
                 onToggleRock = onToggleRock,
+                onToggleTunnel = onToggleTunnel,
                 onToggleFollow = onToggleFollow,
                 onCameraModeChange = onCameraModeChange,
                 onOrbitGestureModeChange = onOrbitGestureModeChange,
@@ -517,6 +526,7 @@ private fun ViewPanelContent(
     selectedSliceAxis: ClipAxis,
     sliceConfiguration: SliceConfiguration,
     rockVisible: Boolean,
+    tunnelVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
     orbitGestureMode: OrbitGestureMode,
@@ -526,6 +536,7 @@ private fun ViewPanelContent(
     onFlipSlice: () -> Unit,
     onToggleSelectedSlice: () -> Unit,
     onToggleRock: () -> Unit,
+    onToggleTunnel: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
     onOrbitGestureModeChange: (OrbitGestureMode) -> Unit,
@@ -563,6 +574,13 @@ private fun ViewPanelContent(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(7.dp),
     ) {
+        ToggleButton(
+            selected = tunnelVisible,
+            selectedText = "TUNNEL ON",
+            unselectedText = "TUNNEL OFF",
+            onClick = onToggleTunnel,
+            modifier = Modifier.weight(1f),
+        )
         ToggleButton(
             selected = orbitGestureMode == OrbitGestureMode.PAN,
             selectedText = "PAN ON",
@@ -644,7 +662,11 @@ private fun ViewPanelContent(
         )
     } else {
         Text(
-            text = "TUNNELS ONLY • grass remains visible as the surface reference",
+            text = if (tunnelVisible) {
+                "TUNNEL VISIBLE • grass remains visible as the surface reference"
+            } else {
+                "TUNNEL HIDDEN • inspect the depleted discovered ore without the tunnel skin"
+            },
             color = Color(0xFF80CBC4),
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(vertical = 7.dp),
@@ -678,6 +700,7 @@ private fun ViewPanelContent(
 
     Text(
         text = when {
+            !rockVisible && !tunnelVisible -> "Tunnel hidden • excavation still exists and material accounting is unchanged; only its overview skin is suppressed."
             seeOre -> "SEE ORE reveals bounded solid ore only on enabled CT faces. Select X/Y/Z to adjust it; enabled cuts stay active together for tri-planar inspection."
             !rockVisible -> "Rock is hidden using a direct tunnel skin, so this view stays responsive even if detailed geology is still refining."
             cameraMode == CameraMode.DIGGER_POV -> "Digger POV looks straight out from just behind the cutter and ignores CT clipping."

@@ -36,6 +36,14 @@ class ViewPlanningTest {
     }
 
     @Test
+    fun tunnelOverviewOnlyRendersWhenRockIsOffAndTunnelIsEnabled() {
+        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = true, tunnelVisible = true))
+        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = true, tunnelVisible = false))
+        assertFalse(TunnelRenderPlanner.shouldRenderOverview(rockVisible = false, tunnelVisible = false))
+        assertTrue(TunnelRenderPlanner.shouldRenderOverview(rockVisible = false, tunnelVisible = true))
+    }
+
+    @Test
     fun sliceConfigurationKeepsIndependentAxisPositionsWhenSwitchingCuts() {
         val initial = SliceConfiguration(
             fractions = SliceFractions(x = 0.20f, y = 0.40f, z = 0.60f),

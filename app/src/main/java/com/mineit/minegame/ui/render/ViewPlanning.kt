@@ -74,6 +74,11 @@ internal data class SliceConfiguration(
     }
 }
 
+internal object TunnelRenderPlanner {
+    fun shouldRenderOverview(rockVisible: Boolean, tunnelVisible: Boolean): Boolean =
+        !rockVisible && tunnelVisible
+}
+
 internal object FollowSlicePlanner {
     fun forDigger(state: MineWorldState): SliceFractions = forPoint(state, state.tunnel.end)
 

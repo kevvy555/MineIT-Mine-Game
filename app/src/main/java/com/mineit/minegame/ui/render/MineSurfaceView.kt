@@ -60,6 +60,10 @@ internal class MineSurfaceView(context: Context) : GLSurfaceView(context) {
         mineRenderer.setRockVisible(visible)
     }
 
+    fun setTunnelVisible(visible: Boolean) {
+        mineRenderer.setTunnelVisible(visible)
+    }
+
     fun setSeeOre(enabled: Boolean) {
         mineRenderer.setSeeOre(enabled)
     }
