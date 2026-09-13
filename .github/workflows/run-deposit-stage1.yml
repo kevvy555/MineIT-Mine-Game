@@ -1,0 +1,28 @@
+name: Run Deposit Stage 1 Patch
+
+on:
+  push:
+    branches:
+      - feature/deposit-geometry-redesign
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[deposit-stage1]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/deposit-geometry-redesign
+          fetch-depth: 0
+      - name: Apply Stage 1
+        run: python3 tools/apply_deposit_stage1.py
+      - name: Commit Stage 1
+        run: |
+          git config user.name "kevvy555"
+          git config user.email "kevvy555@googlemail.com"
+          git add app docs README.md
+          git commit -m "feat: implement subtractive deposit geometry [deposit-stage1]"
+          git push origin HEAD:feature/deposit-geometry-redesign
