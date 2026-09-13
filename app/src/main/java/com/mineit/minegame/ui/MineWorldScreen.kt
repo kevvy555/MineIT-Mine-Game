@@ -38,8 +38,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mineit.minegame.BuildConfig
 import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
+import com.mineit.minegame.domain.OreType
 import com.mineit.minegame.ui.render.CameraMode
 import com.mineit.minegame.ui.render.ClipAxis
 import com.mineit.minegame.ui.render.FollowSlicePlanner
@@ -209,13 +211,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.11.0",
+                    text = "MINEIT // 3D GEOLOGY ${BuildConfig.VERSION_NAME}",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "TRI-PLANAR CT + BOUNDED ORE",
+                    text = "ORE EXTRACTION + MATERIAL ACCOUNTING",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -237,7 +239,10 @@ private fun MineWorldHeader(state: MineWorldState) {
             HeaderStat("DEPTH", "${state.depthMetres.roundToInt()}m")
             HeaderStat("REMOVED", "${state.excavatedVolumeCubicMetres.roundToInt()}m³")
             HeaderStat("WASTE", "${state.wasteRockTonnes.roundToInt()}t")
-            HeaderStat("ORE", "${state.discoveredOreBodyIds.size}/${state.oreBodies.size}")
+            HeaderStat(
+                "ORE",
+                "${state.discoveredOreBodyIds.size}/${state.oreBodies.size} • ${state.totalMinedOreVolumeCubicMetres.roundToInt()}m³",
+            )
         }
     }
 }
@@ -354,6 +359,7 @@ private fun MineWorldControls(
             )
 
             ControlPanel.OTHER -> OtherPanelContent(
+                state = state,
                 showDiagnostics = showDiagnostics,
                 performanceStats = performanceStats,
                 onToggleDiagnostics = onToggleDiagnostics,
@@ -687,6 +693,7 @@ private fun ViewPanelContent(
 
 @Composable
 private fun OtherPanelContent(
+    state: MineWorldState,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
     onToggleDiagnostics: () -> Unit,
@@ -709,6 +716,15 @@ private fun OtherPanelContent(
     }
 
     Text(
+        text = "MINED: Gold ${state.minedOreVolumeCubicMetres(OreType.GOLD).roundToInt()}m³ • " +
+            "Silver ${state.minedOreVolumeCubicMetres(OreType.SILVER).roundToInt()}m³ • " +
+            "Copper ${state.minedOreVolumeCubicMetres(OreType.COPPER).roundToInt()}m³",
+        color = Color(0xFF80CBC4),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 5.dp),
+    )
+
+    Text(
         text = "Renderer: ${performanceStats.framesPerSecond} fps • ${performanceStats.triangleCount / 1000}k tris • " +
             "${performanceStats.cachedChunks} cached chunks • ${performanceStats.queuedChunks} queued • " +
             "mesh ${if (performanceStats.meshWorkerBusy) "busy" else "idle"} • cap ${if (performanceStats.capWorkerBusy) "busy" else "idle"}",
@@ -717,7 +733,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.11 keeps the immediate global-shell architecture, clips ore to generated geology and supports simultaneous persistent X/Y/Z CT cuts.",
+        text = "Excavation is partitioned once into mined ore or waste rock; remaining ore geometry shrinks where the cutter passes, and revisiting old workings produces no new material.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),

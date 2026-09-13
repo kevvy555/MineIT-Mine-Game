@@ -2,23 +2,22 @@
 
 Native Android mining-game prototype in the MineIT universe.
 
-## Current prototype — 0.8.0
+## Current prototype — 0.12.0
 
 The mine is a genuine **3D geological volume** with renderer-independent gameplay rules and a lightweight native OpenGL renderer.
 
-0.8 responds to real Pixel 7 diagnostics: rendering stayed at 90 FPS, but CPU geology generation could fall several seconds behind the digger as the world expanded. The focus is therefore **geometry throughput**, plus two new player controls.
+0.12 adds real ore extraction to the proven 3D mining POC. Gold, Silver and Copper are no longer discovery-only visuals: excavation physically removes ore from the remaining deposit geometry and accounts for the removed material as ore rather than waste.
 
-- untouched outer rock chunks now use a very cheap planar shell instead of running marching tetrahedra over solid material;
-- detailed scalar-field meshing is reserved for chunks actually affected by excavation;
-- redundant solid-field samples previously made for every generated triangle have been removed;
-- dense 100 ms simulation tunnel segments are compacted for meshing while preserving endpoints and sharp bends;
-- two bounded low-priority chunk workers can process the active face in parallel without creating an unbounded CPU pool;
-- active excavation is prioritised over stopped high-detail refinement work;
-- CT-cap sampling is lighter and repeated slice requests are throttled by physical movement distance;
-- live/refined tunnel quality remains approximately **1.6 m / 1.0 m**;
-- a new **SPEED** control changes the real domain excavation rate from **0.25× to 2.0×**;
-- **ROCK OFF** hides geological rock and CT caps but keeps the grass surface and renders the complete excavated tunnel directly, independent of the detailed rock-mesh backlog;
-- follow camera/slices, DIGGER POV, x-ray machine, fixed horizontal turns and absolute vertical angle presets remain available.
+- the cutter partitions each newly excavated volume into **ore or waste rock exactly once**;
+- `excavated volume = waste-rock volume + mined-ore volume`;
+- ore volume is accumulated separately for **Gold, Silver and Copper**;
+- waste tonnage is calculated only from waste-rock volume, so mined ore is not double-counted as waste;
+- samples already inside an existing tunnel are ignored, so crossing an old working cannot produce material a second time;
+- affected ore bodies are depleted in canonical domain state, so narrow veins can disappear locally and broad bodies shrink where the cutter passes;
+- normal discovered-vein rendering, ROCK OFF and SEE ORE CT sections all use the same remaining ore geometry;
+- tri-planar X/Y/Z CT inspection remains persistent and simultaneous, with ore clipped to generated geology;
+- seeded Gold/Silver/Copper geology, pan/orbit/zoom, follow, DIGGER POV, speed control and fixed heading/angle controls remain available;
+- the mobile renderer retains the global-shell + tunnel-chunk architecture that has held approximately 90 FPS on a Pixel 7 in POC testing.
 
 ## Controls
 
@@ -35,24 +34,24 @@ The mine is a genuine **3D geological volume** with renderer-independent gamepla
 
 - **ROCK ON** shows the solid geological model and CT tools.
 - **ROCK OFF** shows the excavated tunnel network while retaining grass as the surface reference.
-- In **ORBIT / CT**, drag to orbit and pinch to zoom.
-- Select **X / Y / Z** and move the slice slider to inspect geology like a CT scan.
-- **OTHER SIDE** reverses which side of the cut remains visible.
-- **SLICE ON / FULL** switches between cutaway and the complete geological volume.
+- In **ORBIT / CT**, drag to orbit and pinch to zoom; switch **PAN** on to move the camera instead.
+- X, Y and Z each keep an independent CT position and cut-side setting and can be enabled simultaneously for tri-planar inspection.
+- **SEE ORE** reveals all remaining seeded deposits only where active CT planes intersect them.
 - **FOLLOW** centres the orbit camera on the digger and moves all three slice positions with it.
 - **DIGGER POV** looks straight out from just behind the cutter along the current heading and slope.
 
 ### OTHER
 
 - Toggle the on-screen renderer diagnostics.
-- **RESET MINE** restores the untouched surface start.
+- The material readout shows cumulative mined Gold, Silver and Copper volumes.
+- **RESET MINE** restores the untouched surface start and original seeded ore bodies.
 
-Purple mineralisation remains hidden until first physical contact. After discovery, the connected vein becomes visible where CT slices intersect it.
+In normal play ore remains hidden until first physical contact. Once a deposit is discovered, its connected **remaining** body can be inspected; material already cut by the machine is no longer present.
 
 ## Architecture
 
-- `domain/` — renderer-independent geology, chunks, ore body, tunnel geometry, excavation speed, discovery and material accounting.
-- `ui/` — Compose controls, continuous-dig loop and Android lifecycle/view state.
-- `ui/render/` — chunk planning/spatial indexing, tunnel-segment compaction, bounded asynchronous mesh workers, OpenGL ES cameras/VBO cache, clipping, CT caps, direct tunnel overview and x-ray machine rendering.
+- `domain/` — renderer-independent geology, chunks, typed ore bodies, tunnel geometry, excavation, material partitioning, ore depletion, speed and discovery.
+- `ui/` — Compose controls, continuous-dig loop and Android lifecycle/transient view state.
+- `ui/render/` — chunk planning/spatial indexing, asynchronous mesh workers, OpenGL ES cameras/VBO cache, global shell, tri-planar clipping/CT faces, ore presentation, direct tunnel overview and x-ray machine rendering.
 
 See `docs/THREE_D_WORLD_POC.md` for the current design direction.
