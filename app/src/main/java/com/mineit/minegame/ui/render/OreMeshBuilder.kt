@@ -70,11 +70,13 @@ internal object OreMeshBuilder {
         right: MinePoint3D,
         up: MinePoint3D,
     ): Array<MinePoint3D> = Array(RING_SEGMENTS) { index ->
-        val angle = (2.0 * PI * index.toDouble() / RING_SEGMENTS.toDouble()).toFloat()
+        val angle = 2.0 * PI * index.toDouble() / RING_SEGMENTS.toDouble()
+        val cosAngle = cos(angle).toFloat()
+        val sinAngle = sin(angle).toFloat()
         MinePoint3D(
-            x = centre.x + (right.x * cos(angle) * radius) + (up.x * sin(angle) * radius),
-            y = centre.y + (right.y * cos(angle) * radius) + (up.y * sin(angle) * radius),
-            z = centre.z + (right.z * cos(angle) * radius) + (up.z * sin(angle) * radius),
+            x = centre.x + (right.x * cosAngle * radius) + (up.x * sinAngle * radius),
+            y = centre.y + (right.y * cosAngle * radius) + (up.y * sinAngle * radius),
+            z = centre.z + (right.z * cosAngle * radius) + (up.z * sinAngle * radius),
         )
     }
 
