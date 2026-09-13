@@ -49,6 +49,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
     private var rockVisible = true
 
     @Volatile
+    private var tunnelVisible = true
+
+    @Volatile
     private var seeOre = false
 
     @Volatile
@@ -241,6 +244,10 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         }
     }
 
+    fun setTunnelVisible(visible: Boolean) {
+        tunnelVisible = visible
+    }
+
     fun setSeeOre(enabled: Boolean) {
         if (enabled == seeOre) return
         seeOre = enabled
@@ -356,7 +363,9 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
         } else {
             applyClipUniforms(state, enabled = false)
             drawMesh(grassMesh)
-            drawMesh(tunnelOverviewMesh)
+            if (TunnelRenderPlanner.shouldRenderOverview(rockVisible, tunnelVisible)) {
+                drawMesh(tunnelOverviewMesh)
+            }
         }
 
         // Discovered connected bodies stay opaque and obey both geological bounds and every active
@@ -663,7 +672,7 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
             machineDirty = false
         }
 
-        if (!rockVisible && tunnelOverviewDirty) {
+        if (!rockVisible && tunnelVisible && tunnelOverviewDirty) {
             val uploadStart = System.nanoTime()
             val uploaded = uploadMesh(MineMeshBuilder.buildTunnelOverview(state))
             lastUploadMs = nanosToMs(System.nanoTime() - uploadStart)
@@ -991,7 +1000,11 @@ internal class MineWorldGlRenderer : GLSurfaceView.Renderer {
                 chunkMeshes.values.sumOf { it.mesh?.vertexCount ?: 0 } +
                 (if (showCutaway) sliceMeshes.values.sumOf { it?.vertexCount ?: 0 } else 0)
         } else {
-            (tunnelOverviewMesh?.vertexCount ?: 0) + (grassMesh?.vertexCount ?: 0)
+            (if (TunnelRenderPlanner.shouldRenderOverview(rockVisible, tunnelVisible)) {
+                tunnelOverviewMesh?.vertexCount ?: 0
+            } else {
+                0
+            }) + (grassMesh?.vertexCount ?: 0)
         }
         val oreVertices = (oreOverlayMesh?.vertexCount ?: 0) +
             (if (showCutaway) oreSliceMeshes.values.sumOf { it?.vertexCount ?: 0 } else 0)

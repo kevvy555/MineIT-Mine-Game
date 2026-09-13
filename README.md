@@ -2,7 +2,7 @@
 
 Native Android mining-game prototype in the MineIT universe.
 
-## Current prototype — 0.12.0
+## Current prototype — 0.12.1
 
 The mine is a genuine **3D geological volume** with renderer-independent gameplay rules and a lightweight native OpenGL renderer.
 
@@ -33,7 +33,8 @@ The mine is a genuine **3D geological volume** with renderer-independent gamepla
 ### VIEW
 
 - **ROCK ON** shows the solid geological model and CT tools.
-- **ROCK OFF** shows the excavated tunnel network while retaining grass as the surface reference.
+- **ROCK OFF** shows the excavation/ore inspection view while retaining grass as the surface reference.
+- **TUNNEL ON/OFF** controls only the direct tunnel overview skin in ROCK OFF, allowing depleted ore to be inspected without changing excavation state or accounting.
 - In **ORBIT / CT**, drag to orbit and pinch to zoom; switch **PAN** on to move the camera instead.
 - X, Y and Z each keep an independent CT position and cut-side setting and can be enabled simultaneously for tri-planar inspection.
 - **SEE ORE** reveals all remaining seeded deposits only where active CT planes intersect them.
