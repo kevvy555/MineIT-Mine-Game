@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.mineit.minegame.domain.MineTickDiagnostics
 import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,16 +54,38 @@ class MineWorldViewModel : ViewModel() {
         if (!mutableState.value.isDigging) return
 
         diggingJob?.cancel()
-        diggingJob = viewModelScope.launch {
-            while (isActive && mutableState.value.isDigging) {
-                delay(DIG_TICK_MILLIS)
-                var diagnostics: MineTickDiagnostics? = null
-                mutableState.update { state ->
-                    MineWorldController.tick(state, DIG_TICK_SECONDS) { diagnostics = it }
+        diggingJob = viewModelScope.launch(Dispatchers.Default) {
+            var nextTickNanos = System.nanoTime() + DIG_TICK_NANOS
+
+            while (isActive) {
+                val waitNanos = nextTickNanos - System.nanoTime()
+                if (waitNanos > 0L) {
+                    delay((waitNanos / NANOS_PER_MILLI).coerceAtLeast(1L))
                 }
-                diagnostics?.let { value ->
-                    tickSequence += 1
-                    mutableTickDiagnostics.value = SequencedTickDiagnostics(tickSequence, value)
+                if (!isActive) break
+
+                val snapshot = mutableState.value
+                if (!snapshot.isDigging) break
+
+                var diagnostics: MineTickDiagnostics? = null
+                val nextState = MineWorldController.tick(snapshot, DIG_TICK_SECONDS) { diagnostics = it }
+
+                // Controls may change while the domain tick is running on the worker thread. Only
+                // publish if the snapshot is still current; otherwise preserve the newer input and
+                // let the next fixed tick calculate from it instead of overwriting user intent.
+                if (mutableState.compareAndSet(snapshot, nextState)) {
+                    diagnostics?.let { value ->
+                        tickSequence += 1
+                        mutableTickDiagnostics.value = SequencedTickDiagnostics(tickSequence, value)
+                    }
+                }
+
+                nextTickNanos += DIG_TICK_NANOS
+                val now = System.nanoTime()
+                if (nextTickNanos < now - DIG_TICK_NANOS) {
+                    // Never run a burst of catch-up ticks after a slow device frame or debugger
+                    // pause. Re-anchor to the fixed 10 Hz cadence instead.
+                    nextTickNanos = now + DIG_TICK_NANOS
                 }
             }
         }
@@ -76,9 +99,11 @@ class MineWorldViewModel : ViewModel() {
     }
 
     private companion object {
-        // Domain state moves smoothly at 10 Hz. The renderer independently throttles expensive
-        // geological remeshing, so machine motion no longer forces a mesh rebuild every tick.
+        // Domain work runs on Dispatchers.Default at a fixed 10 Hz schedule so material
+        // classification cannot block Compose/UI input. Renderer meshing has its own workers.
         const val DIG_TICK_MILLIS = 100L
         const val DIG_TICK_SECONDS = 0.10f
+        const val NANOS_PER_MILLI = 1_000_000L
+        const val DIG_TICK_NANOS = DIG_TICK_MILLIS * NANOS_PER_MILLI
     }
 }
