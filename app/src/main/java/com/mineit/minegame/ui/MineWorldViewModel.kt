@@ -2,6 +2,7 @@ package com.mineit.minegame.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mineit.minegame.domain.MineTickDiagnostics
 import com.mineit.minegame.domain.MineWorldController
 import com.mineit.minegame.domain.MineWorldState
 import kotlinx.coroutines.Job
@@ -13,11 +14,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
+data class SequencedTickDiagnostics(val sequence: Long, val diagnostics: MineTickDiagnostics)
+
 class MineWorldViewModel : ViewModel() {
     private val mutableState = MutableStateFlow(MineWorldState())
     val state: StateFlow<MineWorldState> = mutableState.asStateFlow()
+    private val mutableTickDiagnostics = MutableStateFlow<SequencedTickDiagnostics?>(null)
+    val tickDiagnostics: StateFlow<SequencedTickDiagnostics?> = mutableTickDiagnostics.asStateFlow()
 
     private var diggingJob: Job? = null
+    private var tickSequence = 0L
 
     fun setSteering(value: Float) {
         mutableState.update { MineWorldController.setSteering(it, value) }
@@ -50,8 +56,13 @@ class MineWorldViewModel : ViewModel() {
         diggingJob = viewModelScope.launch {
             while (isActive && mutableState.value.isDigging) {
                 delay(DIG_TICK_MILLIS)
+                var diagnostics: MineTickDiagnostics? = null
                 mutableState.update { state ->
-                    MineWorldController.tick(state, DIG_TICK_SECONDS)
+                    MineWorldController.tick(state, DIG_TICK_SECONDS) { diagnostics = it }
+                }
+                diagnostics?.let { value ->
+                    tickSequence += 1
+                    mutableTickDiagnostics.value = SequencedTickDiagnostics(tickSequence, value)
                 }
             }
         }
@@ -61,6 +72,7 @@ class MineWorldViewModel : ViewModel() {
         diggingJob?.cancel()
         diggingJob = null
         mutableState.value = MineWorldController.reset()
+        mutableTickDiagnostics.value = null
     }
 
     private companion object {

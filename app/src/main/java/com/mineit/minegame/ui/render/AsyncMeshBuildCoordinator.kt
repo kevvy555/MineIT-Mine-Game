@@ -38,6 +38,7 @@ internal data class OreChunkBuildResult(
     val pipelineGeneration: Long,
     val revision: Long,
     val key: OreChunkKey,
+    val gridStepMetres: Float,
     val mesh: MineMesh,
     val buildMs: Float,
 )
@@ -110,6 +111,7 @@ internal class AsyncMeshBuildCoordinator {
                         pipelineGeneration = request.pipelineGeneration,
                         revision = request.revision,
                         key = request.key,
+                        gridStepMetres = request.gridStepMetres,
                         mesh = mesh,
                         buildMs = nanosToMs(System.nanoTime() - start),
                     ),
