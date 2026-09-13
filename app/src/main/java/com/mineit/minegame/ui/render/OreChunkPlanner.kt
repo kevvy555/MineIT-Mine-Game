@@ -2,7 +2,9 @@ package com.mineit.minegame.ui.render
 
 import com.mineit.minegame.domain.MinePoint3D
 import com.mineit.minegame.domain.MineWorldBounds
+import com.mineit.minegame.domain.MineWorldGeometry
 import com.mineit.minegame.domain.OreBody
+import com.mineit.minegame.domain.OreBodyNode
 import com.mineit.minegame.domain.TunnelSegment
 import kotlin.math.floor
 import kotlin.math.max
@@ -28,19 +30,16 @@ internal data class OreChunkKey(
     }
 }
 
-/**
- * Maps immutable deposits and cutter movement onto small render-only ore chunks.
- *
- * The domain still owns the deposit and excavation fields. These keys are only disposable cache
- * partitions so one cutter pass does not force the whole deposit through marching tetrahedra.
- */
+/** Disposable render-cache partitioning around the canonical domain deposit field. */
 internal object OreChunkPlanner {
     const val CHUNK_SIZE_METRES = 12f
 
     fun chunksForBody(body: OreBody, worldBounds: MineWorldBounds): Set<OreChunkKey> {
         val bodyBounds = bodyBounds(body) ?: return emptySet()
         val clipped = intersect(bodyBounds, worldBounds) ?: return emptySet()
-        return keysForBounds(body.id, clipped)
+        return keysForBounds(body.id, clipped).filterTo(linkedSetOf()) { key ->
+            bodyEnvelopeTouchesBounds(body, key.bounds())
+        }
     }
 
     fun affectedChunks(
@@ -62,29 +61,61 @@ internal object OreChunkPlanner {
         )
         val clippedToBody = intersect(cutBounds, bodyBounds) ?: return emptySet()
         val clippedToWorld = intersect(clippedToBody, worldBounds) ?: return emptySet()
-        return keysForBounds(body.id, clippedToWorld)
+        return keysForBounds(body.id, clippedToWorld).filterTo(linkedSetOf()) { key ->
+            bodyEnvelopeTouchesBoth(body, cutBounds, key.bounds())
+        }
     }
 
-    fun bodyBounds(body: OreBody): MineWorldBounds? {
-        if (body.nodes.isEmpty()) return null
-        var minX = Float.POSITIVE_INFINITY
-        var maxX = Float.NEGATIVE_INFINITY
-        var minY = Float.POSITIVE_INFINITY
-        var maxY = Float.NEGATIVE_INFINITY
-        var minZ = Float.POSITIVE_INFINITY
-        var maxZ = Float.NEGATIVE_INFINITY
-        body.nodes.forEach { node ->
-            minX = min(minX, node.centre.x - node.radiusMetres)
-            maxX = max(maxX, node.centre.x + node.radiusMetres)
-            minY = min(minY, node.centre.y - node.radiusMetres)
-            maxY = max(maxY, node.centre.y + node.radiusMetres)
-            minZ = min(minZ, node.centre.z - node.radiusMetres)
-            maxZ = max(maxZ, node.centre.z + node.radiusMetres)
-        }
-        return MineWorldBounds(minX, maxX, minY, maxY, minZ, maxZ)
-    }
+    fun bodyBounds(body: OreBody): MineWorldBounds? = MineWorldGeometry.oreBodyBounds(body)
 
     fun chunkCentre(key: OreChunkKey): MinePoint3D = key.bounds().centre
+
+    private fun bodyEnvelopeTouchesBounds(body: OreBody, bounds: MineWorldBounds): Boolean {
+        if (body.nodes.size == 1) return intersects(nodeBounds(body.nodes.single()), bounds)
+        for (index in 0 until body.nodes.lastIndex) {
+            if (intersects(segmentEnvelope(body.nodes[index], body.nodes[index + 1]), bounds)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun bodyEnvelopeTouchesBoth(
+        body: OreBody,
+        first: MineWorldBounds,
+        second: MineWorldBounds,
+    ): Boolean {
+        if (body.nodes.size == 1) {
+            val envelope = nodeBounds(body.nodes.single())
+            return intersects(envelope, first) && intersects(envelope, second)
+        }
+        for (index in 0 until body.nodes.lastIndex) {
+            val envelope = segmentEnvelope(body.nodes[index], body.nodes[index + 1])
+            if (intersects(envelope, first) && intersects(envelope, second)) return true
+        }
+        return false
+    }
+
+    private fun segmentEnvelope(start: OreBodyNode, end: OreBodyNode): MineWorldBounds {
+        val radius = max(start.radiusMetres, end.radiusMetres)
+        return MineWorldBounds(
+            minX = min(start.centre.x, end.centre.x) - radius,
+            maxX = max(start.centre.x, end.centre.x) + radius,
+            minY = min(start.centre.y, end.centre.y) - radius,
+            maxY = max(start.centre.y, end.centre.y) + radius,
+            minZ = min(start.centre.z, end.centre.z) - radius,
+            maxZ = max(start.centre.z, end.centre.z) + radius,
+        )
+    }
+
+    private fun nodeBounds(node: OreBodyNode) = MineWorldBounds(
+        minX = node.centre.x - node.radiusMetres,
+        maxX = node.centre.x + node.radiusMetres,
+        minY = node.centre.y - node.radiusMetres,
+        maxY = node.centre.y + node.radiusMetres,
+        minZ = node.centre.z - node.radiusMetres,
+        maxZ = node.centre.z + node.radiusMetres,
+    )
 
     private fun keysForBounds(bodyId: String, bounds: MineWorldBounds): Set<OreChunkKey> {
         val size = CHUNK_SIZE_METRES
@@ -107,6 +138,11 @@ internal object OreChunkPlanner {
             }
         }
     }
+
+    private fun intersects(a: MineWorldBounds, b: MineWorldBounds): Boolean =
+        a.maxX >= b.minX && a.minX <= b.maxX &&
+            a.maxY >= b.minY && a.minY <= b.maxY &&
+            a.maxZ >= b.minZ && a.minZ <= b.maxZ
 
     internal fun intersect(a: MineWorldBounds, b: MineWorldBounds): MineWorldBounds? {
         val minX = max(a.minX, b.minX)
