@@ -120,21 +120,25 @@ object MineWorldController {
         val extent = expandExtent(state.extent, target)
         val volume = state.excavatedVolumeCubicMetres +
             cylinderVolume(state.tunnel.radiusMetres, segmentLength)
-        val newlyExposed = MineWorldGeometry.exposedOreSegmentsForSegment(
-            start = start,
-            end = target,
-            tunnelRadiusMetres = state.tunnel.radiusMetres,
-            oreBody = state.oreBody,
-        )
-        val exposures = state.exposedOreSegments + newlyExposed
+        val newlyDiscoveredIds = state.oreBodies.asSequence()
+            .filterNot { it.id in state.discoveredOreBodyIds }
+            .filter { body ->
+                MineWorldGeometry.exposedOreSegmentsForSegment(
+                    start = start,
+                    end = target,
+                    tunnelRadiusMetres = state.tunnel.radiusMetres,
+                    oreBody = body.nodes,
+                ).isNotEmpty()
+            }
+            .map { it.id }
+            .toSet()
 
         return state.copy(
             tunnel = tunnel,
             extent = extent,
             headingDegrees = heading,
             excavatedVolumeCubicMetres = volume,
-            exposedOreSegments = exposures,
-            oreBodyDiscovered = state.oreBodyDiscovered || newlyExposed.isNotEmpty(),
+            discoveredOreBodyIds = state.discoveredOreBodyIds + newlyDiscoveredIds,
             isDigging = state.isDigging && !exitsSurface,
         )
     }

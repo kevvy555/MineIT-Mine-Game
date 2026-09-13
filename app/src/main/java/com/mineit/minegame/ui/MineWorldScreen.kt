@@ -44,6 +44,7 @@ import com.mineit.minegame.ui.render.CameraMode
 import com.mineit.minegame.ui.render.ClipAxis
 import com.mineit.minegame.ui.render.FollowSlicePlanner
 import com.mineit.minegame.ui.render.MineSurfaceView
+import com.mineit.minegame.ui.render.OrbitGestureMode
 import com.mineit.minegame.ui.render.RenderPerformanceStats
 import com.mineit.minegame.ui.render.SliceFractions
 import kotlin.math.abs
@@ -69,6 +70,8 @@ fun MineWorldScreen(
     var rockVisible by remember { mutableStateOf(true) }
     var followDigger by remember { mutableStateOf(false) }
     var cameraMode by remember { mutableStateOf(CameraMode.ORBIT) }
+    var orbitGestureMode by remember { mutableStateOf(OrbitGestureMode.ROTATE) }
+    var seeOre by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(true) }
     var selectedPanel by remember { mutableStateOf(ControlPanel.CONTROL) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -126,6 +129,8 @@ fun MineWorldScreen(
                         view.setRockVisible(rockVisible)
                         view.setFollowDigger(followDigger)
                         view.setCameraMode(cameraMode)
+                        view.setOrbitGestureMode(orbitGestureMode)
+                        view.setSeeOre(seeOre)
                     }
                 },
                 update = { view ->
@@ -134,6 +139,8 @@ fun MineWorldScreen(
                     view.setRockVisible(rockVisible)
                     view.setFollowDigger(followDigger)
                     view.setCameraMode(cameraMode)
+                    view.setOrbitGestureMode(orbitGestureMode)
+                    view.setSeeOre(seeOre)
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -159,6 +166,8 @@ fun MineWorldScreen(
             rockVisible = rockVisible,
             followDigger = followDigger,
             cameraMode = cameraMode,
+            orbitGestureMode = orbitGestureMode,
+            seeOre = seeOre,
             showDiagnostics = showDiagnostics,
             performanceStats = performanceStats,
             onClipAxisChange = { clipAxis = it },
@@ -174,6 +183,8 @@ fun MineWorldScreen(
             onToggleRock = { rockVisible = !rockVisible },
             onToggleFollow = { followDigger = !followDigger },
             onCameraModeChange = { cameraMode = it },
+            onOrbitGestureModeChange = { orbitGestureMode = it },
+            onToggleSeeOre = { seeOre = !seeOre },
             onToggleDiagnostics = { showDiagnostics = !showDiagnostics },
             onSteeringChange = viewModel::setSteering,
             onVerticalAngleChange = viewModel::setVerticalAngle,
@@ -200,13 +211,13 @@ private fun MineWorldHeader(state: MineWorldState) {
         ) {
             Column {
                 Text(
-                    text = "MINEIT // 3D GEOLOGY 0.9.0",
+                    text = "MINEIT // 3D GEOLOGY 0.10.0",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "INSTANT CT + GLOBAL SHELL",
+                    text = "PAN + SEEDED GOLD / SILVER / COPPER",
                     color = Color(0xFF80CBC4),
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -228,7 +239,7 @@ private fun MineWorldHeader(state: MineWorldState) {
             HeaderStat("DEPTH", "${state.depthMetres.roundToInt()}m")
             HeaderStat("REMOVED", "${state.excavatedVolumeCubicMetres.roundToInt()}m³")
             HeaderStat("WASTE", "${state.wasteRockTonnes.roundToInt()}t")
-            HeaderStat("ORE", if (state.oreBodyDiscovered) "FOUND" else "HIDDEN")
+            HeaderStat("ORE", "${state.discoveredOreBodyIds.size}/${state.oreBodies.size}")
         }
     }
 }
@@ -284,6 +295,8 @@ private fun MineWorldControls(
     rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
+    orbitGestureMode: OrbitGestureMode,
+    seeOre: Boolean,
     showDiagnostics: Boolean,
     performanceStats: RenderPerformanceStats,
     onClipAxisChange: (ClipAxis) -> Unit,
@@ -293,6 +306,8 @@ private fun MineWorldControls(
     onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
+    onOrbitGestureModeChange: (OrbitGestureMode) -> Unit,
+    onToggleSeeOre: () -> Unit,
     onToggleDiagnostics: () -> Unit,
     onSteeringChange: (Float) -> Unit,
     onVerticalAngleChange: (Float) -> Unit,
@@ -330,6 +345,8 @@ private fun MineWorldControls(
                 rockVisible = rockVisible,
                 followDigger = followDigger,
                 cameraMode = cameraMode,
+                orbitGestureMode = orbitGestureMode,
+                seeOre = seeOre,
                 onClipAxisChange = onClipAxisChange,
                 onClipFractionChange = onClipFractionChange,
                 onFlipClip = onFlipClip,
@@ -337,6 +354,8 @@ private fun MineWorldControls(
                 onToggleRock = onToggleRock,
                 onToggleFollow = onToggleFollow,
                 onCameraModeChange = onCameraModeChange,
+                onOrbitGestureModeChange = onOrbitGestureModeChange,
+                onToggleSeeOre = onToggleSeeOre,
                 onResetView = onResetView,
             )
 
@@ -502,6 +521,8 @@ private fun ViewPanelContent(
     rockVisible: Boolean,
     followDigger: Boolean,
     cameraMode: CameraMode,
+    orbitGestureMode: OrbitGestureMode,
+    seeOre: Boolean,
     onClipAxisChange: (ClipAxis) -> Unit,
     onClipFractionChange: (Float) -> Unit,
     onFlipClip: () -> Unit,
@@ -509,6 +530,8 @@ private fun ViewPanelContent(
     onToggleRock: () -> Unit,
     onToggleFollow: () -> Unit,
     onCameraModeChange: (CameraMode) -> Unit,
+    onOrbitGestureModeChange: (OrbitGestureMode) -> Unit,
+    onToggleSeeOre: () -> Unit,
     onResetView: () -> Unit,
 ) {
     Row(
@@ -531,6 +554,43 @@ private fun ViewPanelContent(
         )
         OutlinedButton(onClick = onResetView, modifier = Modifier.weight(1f)) {
             Text("RESET")
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        ToggleButton(
+            selected = orbitGestureMode == OrbitGestureMode.PAN,
+            selectedText = "PAN ON",
+            unselectedText = "PAN",
+            onClick = {
+                onOrbitGestureModeChange(
+                    if (orbitGestureMode == OrbitGestureMode.PAN) OrbitGestureMode.ROTATE else OrbitGestureMode.PAN,
+                )
+            },
+            modifier = Modifier.weight(1f),
+        )
+        ToggleButton(
+            selected = seeOre,
+            selectedText = "SEE ORE ON",
+            unselectedText = "SEE ORE",
+            onClick = onToggleSeeOre,
+            modifier = Modifier.weight(1f),
+        )
+    }
+
+    if (seeOre) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 3.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            Text("GOLD", color = Color(0xFFF5B81D), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            Text("SILVER", color = Color(0xFFB8CADB), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+            Text("COPPER", color = Color(0xFFD15C21), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
         }
     }
 
@@ -611,10 +671,12 @@ private fun ViewPanelContent(
 
     Text(
         text = when {
+            seeOre -> "SEE ORE is an inspection view: all seeded deposits inside the generated geology are shown through rock."
             !rockVisible -> "Rock is hidden using a direct tunnel skin, so this view stays responsive even if detailed geology is still refining."
             cameraMode == CameraMode.DIGGER_POV -> "Digger POV looks straight out from just behind the cutter and ignores CT clipping."
+            orbitGestureMode == OrbitGestureMode.PAN -> "PAN selected • drag to move the camera • pinch to zoom. Turn PAN off to rotate again."
             followDigger -> "Follow keeps the camera and all X/Y/Z slice positions on the machine."
-            else -> "Drag to rotate • pinch to zoom • X/Y/Z slices inspect the solid geology."
+            else -> "Drag to rotate • pinch to zoom • PAN enables drag-to-move • X/Y/Z slices inspect the solid geology."
         },
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
@@ -654,7 +716,7 @@ private fun OtherPanelContent(
         modifier = Modifier.padding(top = 6.dp),
     )
     Text(
-        text = "0.9 uses one coherent world shell and an immediate analytic CT face. Detailed chunk work is now reserved for actual excavation, so world size should no longer create slice lag or boundary queues.",
+        text = "0.10 keeps the 0.9 immediate CT/global-shell architecture and adds screen-space camera panning plus deterministic typed ore bodies.",
         color = Color(0xFF8D98A5),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 4.dp),

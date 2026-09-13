@@ -13,6 +13,7 @@ class MineWorldControllerTest {
         assertEquals(1, state.tunnel.points.size)
         assertEquals(0f, state.excavatedVolumeCubicMetres, 0.001f)
         assertFalse(state.oreBodyDiscovered)
+        assertTrue(state.discoveredOreBodyIds.isEmpty())
         assertTrue(MineWorldGeometry.solidMargin(MinePoint3D(0f, 0f, 4f), state.bounds, state.tunnel) > 0f)
     }
 
@@ -170,15 +171,16 @@ class MineWorldControllerTest {
     }
 
     @Test
-    fun touchingOreDiscoversTheConnectedBody() {
+    fun touchingOreDiscoversTheConnectedTypedBody() {
         var state = MineWorldController.startDigging(MineWorldState())
 
         repeat(45) {
             state = MineWorldController.tick(state, 0.25f)
         }
 
-        assertTrue(state.exposedOreSegments.isNotEmpty())
         assertTrue(state.oreBodyDiscovered)
+        assertTrue("gold-1" in state.discoveredOreBodyIds)
+        assertTrue(state.discoveredOreBodies.any { it.type == OreType.GOLD })
     }
 
     @Test
@@ -187,25 +189,29 @@ class MineWorldControllerTest {
         repeat(45) {
             state = MineWorldController.tick(state, 0.25f)
         }
-        assertTrue(state.oreBodyDiscovered)
+        val discovered = state.discoveredOreBodyIds
+        assertTrue(discovered.isNotEmpty())
 
         state = MineWorldController.setSteering(state, -1f)
         repeat(12) {
             state = MineWorldController.tick(state, 0.25f)
         }
 
-        assertTrue(state.oreBodyDiscovered)
+        assertTrue(state.discoveredOreBodyIds.containsAll(discovered))
     }
 
     @Test
-    fun incrementalOreExposureMatchesFullTunnelScan() {
+    fun incrementalTypedDiscoveryMatchesFullTunnelScan() {
         var state = MineWorldController.startDigging(MineWorldState())
         repeat(45) {
             state = MineWorldController.tick(state, 0.25f)
         }
 
-        val fullScan = MineWorldGeometry.exposedOreSegments(state.tunnel, state.oreBody)
-        assertEquals(fullScan, state.exposedOreSegments)
+        val fullScan = state.oreBodies
+            .filter { MineWorldGeometry.exposedOreSegments(state.tunnel, it.nodes).isNotEmpty() }
+            .map { it.id }
+            .toSet()
+        assertEquals(fullScan, state.discoveredOreBodyIds)
     }
 
     @Test
