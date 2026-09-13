@@ -18,6 +18,7 @@ jobs:
       - name: Apply refinement
         shell: bash
         run: |
+          # retry after verifying all staged base64 chunk blob hashes
           cat .tmp/ore-refinement/part_* | base64 -d | gzip -d > /tmp/apply_ore_refinement.py
           python /tmp/apply_ore_refinement.py
       - name: Commit refinement
